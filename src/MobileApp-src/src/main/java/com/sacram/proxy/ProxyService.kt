@@ -85,9 +85,6 @@ class ProxyService : Service() {
     private var keepAliveJob: Job? = null
     private var startedAt: Long = 0L
 
-    private fun uptimeSeconds(): String =
-        ((System.currentTimeMillis() - startedAt) / 1000).toString()
-
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -98,7 +95,6 @@ class ProxyService : Service() {
             startForegroundCompat()
         } catch (e: Exception) {
             Log.e(TAG, "startForeground failed", e)
-            Telemetry.send(this, "foreground_start_failed", mapOf("reason" to (e.message ?: "unknown")))
         }
         acquireLocks()
         startFileWatcher()
@@ -142,19 +138,17 @@ class ProxyService : Service() {
                     while (!wifiOk && started.get()) {
                         if (!ConfigManager.load(this@ProxyService).autoRestartOnWifiReturn) break
                         updateStatus("WiFi is off - waiting for it to return before (re)starting the proxy...")
-                        Telemetry.send(this, "wifi_waiting", mapOf("reason" to "wifi_off_wait") + Telemetry.batteryInfo(this))
                         delay(5000)
                         wifiOk = WifiDirectManager(this@ProxyService).ensureWifiOn()
                     }
                 }
                 if (!wifiOk) {
-                    Telemetry.send(this, "proxy_error", mapOf("reason" to "wifi_off") + Telemetry.batteryInfo(this))
                     updateStatus("ERROR [01]: WiFi is off - turn on WiFi to start the hotspot")
                     stopSelf()
                     return
                 }
             }
-            Telemetry.send(this, "proxy_starting", mapOf("wifi_auto_ok" to "$wifiOk", "port" to "${config.port}"))
+            Log.i(TAG, "proxy starting wifiOk=$wifiOk port=${config.port}")
             val p2p = WifiDirectManager(this)
 
             updateStatus("Creating WiFi Direct group...")
@@ -174,7 +168,7 @@ class ProxyService : Service() {
             }
             Log.i(TAG, "createGroup waited=${waited}ms ok=$createOk msg=$createMsg")
             if (!createOk) {
-                Telemetry.send(this, "proxy_error", mapOf("reason" to createMsg) + Telemetry.batteryInfo(this))
+                Log.e(TAG, "proxy_error: $createMsg")
                 updateStatus("ERROR: $createMsg")
                 stopSelf()
                 return
@@ -200,7 +194,7 @@ class ProxyService : Service() {
                 if (formed) break
             }
             if (!formed) {
-                Telemetry.send(this, "proxy_error", mapOf("reason" to "group did not form") + Telemetry.batteryInfo(this))
+                Log.e(TAG, "proxy_error: group did not form")
                 updateStatus("ERROR: group did not form")
                 stopSelf()
                 return
@@ -239,7 +233,7 @@ class ProxyService : Service() {
                     AppState.apInfo.value = ApInfo(actualSsid, actualPass, goIp, 0, config.panelPort, backupPanelPortActual)
                     updateStatus("RUNNING (HTTP) - connect to '$actualSsid' then HTTP proxy $goIp:${config.httpPort} and SOCKS4 $goIp:${config.socks4Port}")
                     updateNotification(actualSsid, actualPass, goIp, config.httpPort, 0, false, config.panelPort, backupPanelPortActual)
-                    Telemetry.send(this, "proxy_started", mapOf("mode" to "http", "port" to "${config.httpPort}", "wifi_auto_ok" to "$wifiOk") + Telemetry.batteryInfo(this))
+                    Log.i(TAG, "proxy_started mode=http port=${config.httpPort}")
                 }
                 hybrid -> {
                     updateStatus("Starting SOCKS5 proxy on $goIp:${config.port}...")
@@ -266,7 +260,7 @@ class ProxyService : Service() {
                     AppState.apInfo.value = ApInfo(actualSsid, actualPass, goIp, 0, config.panelPort, backupPanelPortActual)
                     updateStatus("RUNNING (HYBRID) - connect to '$actualSsid' then SOCKS5 $goIp:${config.port} and HTTP $goIp:${config.httpPort} and SOCKS4 $goIp:${config.socks4Port}")
                     updateNotification(actualSsid, actualPass, goIp, config.port, config.httpPort, true, config.panelPort, backupPanelPortActual)
-                    Telemetry.send(this, "proxy_started", mapOf("mode" to "hybrid", "port" to "${config.port}", "http_port" to "${config.httpPort}", "wifi_auto_ok" to "$wifiOk") + Telemetry.batteryInfo(this))
+                    Log.i(TAG, "proxy_started mode=hybrid port=${config.port} http_port=${config.httpPort}")
                 }
                 else -> {
                     updateStatus("Starting SOCKS5 proxy on $goIp:${config.port}...")
@@ -281,13 +275,9 @@ class ProxyService : Service() {
                     AppState.apInfo.value = ApInfo(actualSsid, actualPass, goIp, 0, config.panelPort, backupPanelPortActual)
                     updateStatus("RUNNING - connect to '$actualSsid' then SOCKS5 $goIp:${config.port} and SOCKS4 $goIp:${config.socks4Port}")
                     updateNotification(actualSsid, actualPass, goIp, config.port, 0, false, config.panelPort, backupPanelPortActual)
-                    Telemetry.send(this, "proxy_started", mapOf("mode" to "socks5", "port" to "${config.port}", "wifi_auto_ok" to "$wifiOk") + Telemetry.batteryInfo(this))
+                    Log.i(TAG, "proxy_started mode=socks5 port=${config.port}")
                 }
             }
-            // Ship the opening batch immediately so the collector has a
-            // device row without waiting for the 10-min timer.
-            Telemetry.flush(this)
-
             // Control panel runs on its own port + own thread pool, independent of
             // the proxy traffic, so it stays responsive even when the proxy is
             // saturated by a heavy page. Started in every mode (it only serves
@@ -321,8 +311,7 @@ class ProxyService : Service() {
                 )
             }
 
-            // client count poller + group-keepalive + proxy health + heartbeat (every 5 min)
-            var beats = 0
+            // client count poller + group-keepalive + proxy health (every 5s)
             var groupRecreateGuard = false
             var groupRecreateCount = 0
             val groupRecreateMax = 21
@@ -347,7 +336,6 @@ class ProxyService : Service() {
                     if (!proxyDownNotified) {
                         proxyDownNotified = true
                         Log.w(TAG, "Main proxy ports closed but service alive - backup panel at $bUrl")
-                        Telemetry.send(this, "proxy_down_backup_available", mapOf("backup_port" to "$bPort") + Telemetry.batteryInfo(this))
                     }
                     AppState.status.value = "PROXY DOWN - WiFi Direct still up. $bUrl"
                 } else {
@@ -371,14 +359,13 @@ class ProxyService : Service() {
                             if (!config.keepRetryingReform && groupRecreateCount >= groupRecreateMax) {
                                 // Already retried the cap number of times and the
                                 // "keep retrying" toggle is off; stop spamming
-                                // recreation + telemetry and leave it dead.
+                                // recreation and leave it dead.
                                 AppState.status.value = "RUNNING - AP gave up re-forming (max $groupRecreateMax retries)"
                                 return@requestGroupInfo
                             }
                             groupRecreateGuard = true
                             groupRecreateCount++
                             Log.w(TAG, "WiFi Direct group lost (inactivity) - recreating to keep AP alive (retry $groupRecreateCount/$groupRecreateMax)")
-                            Telemetry.send(this, "p2p_group_recreated", mapOf("reason" to "inactivity_drop", "retry" to "$groupRecreateCount"))
                             scope.launch {
                                 recreateGroup(p2p, config)
                                 groupRecreateGuard = false
@@ -397,33 +384,11 @@ class ProxyService : Service() {
                         }
                     }
                 }
-                beats++
-                if (beats % 12 == 0) {
-                    val (modeLabel, reportPort) = when {
-                        httpMode -> "http" to "${config.httpPort}"
-                        hybrid -> "hybrid" to "${config.port}"
-                        else -> "socks5" to "${config.port}"
-                    }
-                    Telemetry.send(
-                        this,
-                        "heartbeat",
-                        mapOf(
-                            "uptime" to uptimeSeconds(),
-                            "clients" to "${AppState.apInfo.value.clients}",
-                            "mode" to modeLabel,
-                            "port" to reportPort,
-                            "running" to "true",
-                            "last_active" to "${System.currentTimeMillis()}"
-                        ) + Telemetry.batteryInfo(this)
-                    )
-                    Telemetry.flush(this)
-                }
             }
         } catch (e: Exception) {
             // A cancelled coroutine (normal shutdown / restart) is not an error.
             if (e is kotlinx.coroutines.CancellationException) return
             Log.e(TAG, "pipeline error", e)
-            Telemetry.send(this, "proxy_error", mapOf("reason" to (e.message ?: "unknown")) + Telemetry.batteryInfo(this))
             updateStatus("ERROR: ${e.message}")
             stopSelf()
         }
@@ -603,7 +568,7 @@ class ProxyService : Service() {
     private fun restartProxy() {
         if (!started.get()) return
         scope.launch {
-            Telemetry.send(this@ProxyService, "proxy_restart", mapOf("reason" to "config_changed", "uptime" to uptimeSeconds()) + Telemetry.batteryInfo(this@ProxyService))
+            Log.i(TAG, "proxy_restart reason=config_changed")
             updateStatus("Config changed, restarting...")
             // NOTE: backupPanel is deliberately NOT stopped here - it stays up
             // over WiFi Direct so there is always a restart path even if the
@@ -628,8 +593,7 @@ class ProxyService : Service() {
         started.set(false)
         ProxyState.setShouldRun(this, false)
         cancelWatchdog(this)
-            Telemetry.send(this, "proxy_stopped", mapOf("uptime" to uptimeSeconds()) + Telemetry.batteryInfo(this))
-            Telemetry.flush(this)
+        Log.i(TAG, "proxy_stopped")
         restartJob?.cancel()
         keepAliveJob?.cancel()
         runCatching { fileObserver?.stopWatching() }

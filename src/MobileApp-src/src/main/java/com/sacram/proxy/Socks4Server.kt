@@ -322,16 +322,8 @@ class Socks4Server(
         }
     }
 
+    /** Closed SOCKS4 tunnel accounting hook (no-op; telemetry removed). */
     private fun reportTunnel(target: String, targetPort: Int, dms: Long, tx: Long, rx: Long) {
-        Telemetry.send(
-            context, "socks4_tunnel",
-            mapOf(
-                "port" to "$targetPort",
-                "dms" to "$dms",
-                "up_bytes" to "$tx",
-                "dn_bytes" to "$rx"
-            )
-        )
     }
 
     private suspend fun pump(src: InputStream, dst: OutputStream): Long {

@@ -22,10 +22,8 @@ import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import android.content.DialogInterface
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -76,7 +74,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var etKeepaliveInterval: EditText
     private lateinit var chkRequireApprovalRestart: CheckBox
     private lateinit var chkDisableBandSelector: CheckBox
-    private lateinit var chkTelemetryEnabled: CheckBox
     private lateinit var chkKeepRetryingReform: CheckBox
     private lateinit var chkAutoRestartOnWifiReturn: CheckBox
     private lateinit var tvPanelUrl: TextView
@@ -101,7 +98,6 @@ class MainActivity : AppCompatActivity() {
             startProxy()
         } else {
             val denied = it.filterValues { !it }.keys.joinToString(",")
-            Telemetry.send(this, "permissions_denied", mapOf("missing" to denied))
             Log.e(TAG, "permissions denied: $denied")
             Toast.makeText(this, "Some permissions denied - starting anyway, WiFi Direct may fail", Toast.LENGTH_LONG).show()
             startProxy()
@@ -154,22 +150,12 @@ class MainActivity : AppCompatActivity() {
             applyBandSelectorVisibility(chkDisableBandSelector.isChecked)
             autosave()
         }
-        chkTelemetryEnabled = findViewById(R.id.chkTelemetryEnabled)
-        chkTelemetryEnabled.isChecked = config.telemetryEnabled
-        chkTelemetryEnabled.setOnCheckedChangeListener { _, isChecked ->
-            telemetryTouched = true
-            autosave()
-            if (isChecked) Telemetry.flushNow(this, "telemetry_enabled")
-        }
         chkKeepRetryingReform = findViewById(R.id.chkKeepRetryingReform)
         chkKeepRetryingReform.isChecked = config.keepRetryingReform
         chkKeepRetryingReform.setOnCheckedChangeListener { _, _ -> autosave() }
         chkAutoRestartOnWifiReturn = findViewById(R.id.chkAutoRestartOnWifiReturn)
         chkAutoRestartOnWifiReturn.isChecked = config.autoRestartOnWifiReturn
         chkAutoRestartOnWifiReturn.setOnCheckedChangeListener { _, _ -> autosave() }
-        // Already opted in before this launch? Ship one batch now so the
-        // collector has a device row to target without waiting 10 minutes.
-        if (config.telemetryEnabled) Telemetry.flushNow(this, "session_start")
         tilPort = findViewById(R.id.tilPort)
         tilHttpPort = findViewById(R.id.tilHttpPort)
         setupProxyTypeDropdown(config.proxyType)
@@ -190,7 +176,6 @@ class MainActivity : AppCompatActivity() {
             Log.w(TAG, "no valid password set yet - will error on start until set")
             tvStatus.text = "Stopped - set a WiFi password (8-63 chars) first"
         }
-        maybeShowTelemetryPrompt()
 
         btnToggle.setOnClickListener {
             if (AppState.running.value) {
@@ -232,24 +217,6 @@ class MainActivity : AppCompatActivity() {
                         } else {
                             btnCheckUpdate.text = "Check for updates"
                         }
-                    }
-                }
-                launch {
-                    // Heartbeat: every 30 min while the app is visible.
-                    // Cancelled automatically when the app leaves the foreground.
-                    while (true) {
-                        delay(30 * 60 * 1000)
-                        val cfg = ConfigManager.load(this@MainActivity)
-                        Telemetry.send(
-                            this@MainActivity,
-                            "heartbeat",
-                            mapOf(
-                                "running" to "${AppState.running.value}",
-                                "status" to AppState.status.value,
-                                "clients" to "${AppState.apInfo.value.clients}",
-                                "telemetry_enabled" to "${cfg.telemetryEnabled}"
-                            ) + Telemetry.batteryInfo(this@MainActivity)
-                        )
                     }
                 }
             }
@@ -411,7 +378,6 @@ class MainActivity : AppCompatActivity() {
         (tilHttpPort.layoutParams as LinearLayout.LayoutParams).weight = if (showHttp && !showSocks) 2f else 1f
     }
 
-    private var telemetryTouched = false
     private var eggTaps = 0
     private var approvalDialog: androidx.appcompat.app.AlertDialog? = null
 
@@ -534,8 +500,6 @@ class MainActivity : AppCompatActivity() {
                 disableBandSelector = chkDisableBandSelector.isChecked,
                 keepRetryingReform = chkKeepRetryingReform.isChecked,
                 autoRestartOnWifiReturn = chkAutoRestartOnWifiReturn.isChecked,
-                telemetryEnabled = chkTelemetryEnabled.isChecked,
-                telemetryPrompted = prev.telemetryPrompted || telemetryTouched,
                 updateCheckIntervalHours = updateCheckIntervalHours
             )
         )
@@ -583,78 +547,6 @@ class MainActivity : AppCompatActivity() {
         etProxyType.setText(PROXY_TYPE_LABELS[idx], false)
         autosave()
         checkPermissionsAndStart()
-    }
-
-    private fun maybeShowTelemetryPrompt() {
-        val cfg = ConfigManager.load(this)
-        if (cfg.telemetryPrompted) return
-
-        val message = "Sacram can send anonymous usage data to help improve the app. When enabled it collects:\n\n" +
-            "• Device model, Android version, app version\n" +
-            "• Proxy events, errors and heartbeats\n" +
-            "• Connection health only (ports, bytes up/down, latency, status codes) — never the domain names of sites you visit. No full URLs, search queries, SSID, password or IP addresses are ever collected.\n\n" +
-            "You can disable it anytime by setting telemetry_enabled=false in config.txt."
-
-        val checkBox = CheckBox(this).apply {
-            text = "I understand and agree to share this data"
-            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.text_primary))
-            textSize = 14f
-        }
-        val body = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(40, 24, 40, 8)
-            val tv = TextView(this@MainActivity).apply {
-                text = message
-                setTextColor(ContextCompat.getColor(this@MainActivity, R.color.text_secondary))
-                textSize = 14f
-                setLineSpacing(2f, 1.1f)
-            }
-            addView(tv)
-            addView(checkBox)
-        }
-
-        // Cap the dialog body height and make it scrollable so the agree checkbox
-        // stays reachable on small screens (otherwise it could sit below the
-        // visible area with no way to scroll to it).
-        val metrics = resources.displayMetrics
-        val maxBodyHeight = (metrics.heightPixels * 0.6f).toInt()
-        val scroll = ScrollView(this).apply {
-            isFillViewport = true
-            layoutParams = ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                maxBodyHeight
-            )
-        }
-        scroll.addView(body)
-
-        val dialog = MaterialAlertDialogBuilder(this)
-            .setTitle("Help improve Sacram?")
-            .setView(scroll)
-            .setCancelable(false)
-                .setNegativeButton("No thanks") { d, _ ->
-                    ConfigManager.save(this, cfg.copy(telemetryPrompted = true, telemetryEnabled = false))
-                    chkTelemetryEnabled.isChecked = false
-                    d.dismiss()
-                }
-                .setPositiveButton("Yes, share") { d, _ ->
-                    ConfigManager.save(this, cfg.copy(telemetryPrompted = true, telemetryEnabled = true))
-                    chkTelemetryEnabled.isChecked = true
-                    d.dismiss()
-                    Telemetry.send(this, "telemetry_opted_in")
-                }
-            .create()
-
-        dialog.setOnShowListener {
-            val positive = dialog.getButton(DialogInterface.BUTTON_POSITIVE)
-            val negative = dialog.getButton(DialogInterface.BUTTON_NEGATIVE)
-            // Theme colorPrimary is near-black, which made these buttons
-            // invisible on the dark dialog - force readable colors.
-            positive.setTextColor(ContextCompat.getColor(this, R.color.on_primary))
-            negative.setTextColor(ContextCompat.getColor(this, R.color.text_secondary))
-            positive.isEnabled = false
-            checkBox.setOnCheckedChangeListener { _, checked -> positive.isEnabled = checked }
-        }
-        dialog.show()
     }
 
     private fun checkPermissionsAndStart() {

@@ -109,11 +109,8 @@ class HttpProxyServer(
 
     private val dnsCache = ConcurrentHashMap<String, Pair<List<InetAddress>, Long>>()
     private val connPool = ConcurrentHashMap<String, MutableList<Pair<Socket, Long>>>()
-    // Per-request telemetry sampler: we never log full URLs, only the host
-    // (domain) and HTTP status, and we sample successes heavily so a busy
-    // browsing session can't flood the capped telemetry store. Failures are
-    // always reported so connection breakage is captured.
-    private val reqCounter = AtomicInteger(0)
+    // Success/failure timestamps feeding the stale-egress auto-heal watchdog.
+    // Failures without any success for STALE_TIMEOUT_MS trigger a restart.
     // Auto-heal: last time we saw a successful vs a failed upstream request.
     // If failures keep happening but nothing succeeds for STALE_TIMEOUT_MS, the
     // egress network (cellular) has almost certainly gone stale and we ask the
@@ -430,43 +427,24 @@ class HttpProxyServer(
             caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
     }
 
+    /**
+     * Tracks request success/failure timestamps for the stale-egress watchdog
+     * below. Previously also sampled per-request stats to telemetry; now it
+     * only feeds the auto-heal detector. [upBytes]/download accounting lives
+     * at the call site and is intentionally not shipped anywhere.
+     */
     private fun reportRequest(host: String, port: Int, method: String, status: String, dms: Long) {
         val now = System.currentTimeMillis()
         val code = status.toIntOrNull() ?: -1
         val isFailure = status == "fail" || code >= 400
         if (isFailure) lastFailureMs.set(now) else lastSuccessMs.set(now)
-        val n = reqCounter.incrementAndGet()
-        // Sample ~1 in 10 successful requests; always report failures.
-        if (!isFailure && n % 10 != 0) return
-        Telemetry.send(
-            context, "http_request",
-            mapOf(
-                "port" to "$port",
-                "method" to method,
-                "status" to status,
-                "dms" to "$dms"
-            )
-        )
     }
 
     /**
-     * Reports a closed CONNECT tunnel. [upBytes] is the data the device uploaded
-     * (client -> upstream, i.e. bytes it SENT) and [dnBytes] is what it
-     * downloaded (upstream -> client, bytes RECEIVED). Every byte-bearing
-     * tunnel is reported so the collector's lifetime total is accurate; idle
-     * (0-byte) tunnels are reported too so the dashboard shows dead egress.
+     * Closed CONNECT tunnel accounting hook (no-op; telemetry removed).
+     * [upBytes] is device upload (client -> upstream), [dnBytes] download.
      */
     private fun reportTunnel(host: String, port: Int, dms: Long, upBytes: Long, dnBytes: Long, firstByteMs: Long) {
-        Telemetry.send(
-            context, "http_tunnel",
-            mapOf(
-                "port" to "$port",
-                "dms" to "$dms",
-                "up_bytes" to "$upBytes",
-                "dn_bytes" to "$dnBytes",
-                "first_byte_ms" to "$firstByteMs"
-            )
-        )
     }
 
     /**
@@ -488,7 +466,6 @@ class HttpProxyServer(
             if (noSuccessFor > STALE_TIMEOUT_MS && recentFail) {
                 if (autoRestartGuard.compareAndSet(false, true)) {
                     onLog("Auto-heal: no successful request for ${noSuccessFor / 1000}s but recent failures - restarting proxy")
-                    Telemetry.send(context, "proxy_autoheal", mapOf("idle_s" to "${noSuccessFor / 1000}"))
                     onStaleDetected()
                 }
             }

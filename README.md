@@ -69,7 +69,7 @@ Android app (Kotlin) that turns any spare Android phone into a **WiFi Direct hot
 4. Lets a connected PC / device reach the internet through the phone's data connection
 5. Runs as an **aggressive foreground service** (wakelocks, WiFi lock, `START_STICKY`, battery-exemption + autostart shortcuts)
 
-Full setup guide, config reference, control panel, keep-alive and telemetry
+Full setup guide, config reference, control panel and keep-alive
 details live in the **[wiki](https://github.com/SynacNipo/Sacram/wiki)**.
 
 ## OEM quirks (some sites may not load)

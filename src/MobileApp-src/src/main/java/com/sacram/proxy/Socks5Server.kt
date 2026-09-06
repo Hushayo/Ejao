@@ -566,29 +566,15 @@ class Socks5Server(
     }
 
     /**
-     * Reports a closed SOCKS5 TCP CONNECT tunnel. See [reportTunnel] for the
-     * up/down (sent/received) byte semantics - here [tx] is client->server
-     * (upload) and [rx] is server->client (download).
+     * Closed SOCKS5 TCP CONNECT tunnel accounting hook. Previously reported
+     * per-tunnel stats to telemetry; now a no-op kept so call sites stay
+     * untouched. [tx] is client->server (upload), [rx] server->client.
      */
     private fun reportTunnel(target: String, targetPort: Int, dms: Long, tx: Long, rx: Long) {
-        Telemetry.send(
-            context, "socks5_tunnel",
-            mapOf(
-                "port" to "$targetPort",
-                "dms" to "$dms",
-                "up_bytes" to "$tx",
-                "dn_bytes" to "$rx"
-            )
-        )
     }
 
-    /** Reports cumulative bytes for a SOCKS5 UDP relay session that just ended. */
+    /** Closed UDP relay session accounting hook (no-op; telemetry removed). */
     private fun reportUdp(session: UdpSession) {
-        if (session.tx == 0L && session.rx == 0L) return
-        Telemetry.send(
-            context, "socks5_udp",
-            mapOf("up_bytes" to "${session.tx}", "dn_bytes" to "${session.rx}")
-        )
     }
 
     private suspend fun pump(src: InputStream, dst: OutputStream): Long {

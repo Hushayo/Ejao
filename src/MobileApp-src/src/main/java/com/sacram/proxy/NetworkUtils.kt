@@ -24,9 +24,9 @@ object NetworkUtils {
         if (isValidCellular(cm, preferred)) return preferred
         val nets = runCatching { cm.allNetworks }.getOrNull().orEmpty()
         // Prefer the system's ACTIVE network if it actually has internet. This is
-        // the network the phone itself uses for its own traffic (e.g. its own
-        // telemetry uploads reach the collector over it), so it is the most
-        // reliable egress. Some devices (e.g. HONOR) report a cellular network
+        // the network the phone itself uses for its own traffic (e.g. keep-alive
+        // probes and update checks reach the internet over it), so it is the
+        // most reliable egress. Some devices (e.g. HONOR) report a cellular network
         // flagged with INTERNET that nonetheless does not route, while the active
         // network (WiFi/another cellular path) works fine - binding to the dead
         // cellular interface made every proxy request fail even though the phone

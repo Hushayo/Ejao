@@ -24,10 +24,6 @@ data class AppConfig(
     // (Socks4Server) alongside SOCKS5 so legacy SOCKS4/SOCKS4a clients work.
     // Defaults to the SOCKS5 port + 1.
     val socks4Port: Int = 1081,
-    val telemetryPrompted: Boolean = false,
-    val telemetryEnabled: Boolean = false,
-    val collectorUrl: String = "https://sacram-telemetry.synacnipo.workers.dev",
-    val collectorToken: String = "",
     val keepaliveUrl: String = "https://www.google.com/generate_204",
     val keepaliveIntervalMs: Long = 60_000L,
     val panelEnabled: Boolean = true,
@@ -187,15 +183,9 @@ object ConfigManager {
                     ?: defaultConfig.httpPort,
                 socks4Port = p.getProperty("socks4_port", defaultConfig.socks4Port.toString()).toIntOrNull()
                     ?.coerceIn(1, 65535) ?: defaultConfig.socks4Port,
-                telemetryPrompted = p.getProperty("telemetry_prompted", "false").toBoolean(),
-                telemetryEnabled = p.getProperty("telemetry_enabled", "false").toBoolean(),
-                collectorUrl = p.getProperty("collector_url", defaultConfig.collectorUrl)
-                    .ifBlank { defaultConfig.collectorUrl },
-                collectorToken = p.getProperty("collector_token", defaultConfig.collectorToken)
-                    .ifBlank { defaultConfig.collectorToken },
                 keepaliveUrl = p.getProperty("keepalive_url", defaultConfig.keepaliveUrl)
                     .ifBlank { defaultConfig.keepaliveUrl }
-                    .let { if (it == "https://sacram-telemetry.synacnipo.workers.dev/keepalive") defaultConfig.keepaliveUrl else it },
+                    .let { if ("workers.dev" in it) defaultConfig.keepaliveUrl else it },
                 keepaliveIntervalMs = p.getProperty("keepalive_interval_ms", defaultConfig.keepaliveIntervalMs.toString())
                     .toLongOrNull()?.coerceAtLeast(15_000L) ?: defaultConfig.keepaliveIntervalMs,
                 panelEnabled = p.getProperty("panel_enabled", defaultConfig.panelEnabled.toString()).toBoolean(),
@@ -232,10 +222,6 @@ object ConfigManager {
             "proxy_type=${config.proxyType}",
             "http_port=${config.httpPort}",
             "socks4_port=${config.socks4Port}",
-            "telemetry_prompted=${config.telemetryPrompted}",
-            "telemetry_enabled=${config.telemetryEnabled}",
-            "collector_url=${config.collectorUrl}",
-            "collector_token=${config.collectorToken}",
             "keepalive_url=${config.keepaliveUrl}",
             "keepalive_interval_ms=${config.keepaliveIntervalMs}",
             "panel_enabled=${config.panelEnabled}",

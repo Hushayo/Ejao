@@ -544,21 +544,6 @@
                     android:textSize="12sp" />
 
                 <CheckBox
-                    android:id="@+id/chkTelemetryEnabled"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="14dp"
-                    android:text="Share anonymous telemetry" />
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:text="Device model, Android version, connection health (ports, bytes, latency, status codes) and heartbeats. Never SSID, password, IPs, full URLs or search queries."
-                    android:textColor="@color/text_secondary"
-                    android:textSize="12sp" />
-
-                <CheckBox
                     android:id="@+id/chkKeepRetryingReform"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"

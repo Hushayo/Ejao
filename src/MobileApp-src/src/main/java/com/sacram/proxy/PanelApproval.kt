@@ -44,13 +44,11 @@ object PanelApproval {
     fun approve(context: Context): Boolean {
         val r = _pending.value ?: return false
         if (r.fields["action"] == "restart") {
-            Telemetry.send(context, "panel_restart_approved", mapOf())
             onRestart?.invoke()
             _pending.value = null
             return true
         }
         applyFields(context, r.fields)
-        Telemetry.send(context, "panel_approved", mapOf("fields" to r.fields.keys.joinToString(",")))
         _pending.value = null
         return true
     }
@@ -66,7 +64,6 @@ object PanelApproval {
                 ?: prev.keepaliveUrl,
             keepaliveIntervalMs = (fields["keepalive_interval"]?.toLongOrNull()?.coerceAtLeast(15)
                 ?: (prev.keepaliveIntervalMs / 1000)) * 1000L,
-            telemetryEnabled = fields["telemetry_enabled"] == "on",
             panelEnabled = fields["panel_enabled"] == "on",
             band = fields["band"]?.trim()?.takeIf { it in setOf("2.4", "5", "auto") }
                 ?: prev.band

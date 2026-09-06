@@ -351,7 +351,6 @@ class PanelServer(
             cfg.effectiveMode() == "http" -> "HTTP"
             else -> "SOCKS5"
         }
-        val telChecked = if (cfg.telemetryEnabled) "checked" else ""
         val panelChecked = if (cfg.panelEnabled) "checked" else ""
         val restartNote = if (cfg.requireApprovalRestart)
             "Restarts the proxy + hotspot. Requires in-app owner approval (10s window)."
@@ -423,7 +422,6 @@ class PanelServer(
                     <option value="auto"${if (cfg.band == "auto") " selected" else ""}>Auto</option>
                 </select>
 
-                <label class="switch-row"><span>Telemetry enabled</span><input type="checkbox" name="telemetry_enabled" value="on" $telChecked><span class="switch"></span></label>
                 <label class="switch-row"><span>Control panel enabled</span><input type="checkbox" name="panel_enabled" value="on" $panelChecked><span class="switch"></span></label>
 
                 <button type="submit" class="btn">Save settings</button>
