@@ -44,6 +44,12 @@ data class AppConfig(
     // panel stays responsive even when the proxy worker pool is saturated.
     // Defaults to httpPort + 1 when not explicitly set.
     val panelPort: Int = 8283,
+    // Emergency backup dashboard port. Runs BackupPanelServer, which is
+    // started right after the WiFi Direct group forms and is NEVER stopped
+    // by restartProxy() - so it stays reachable at http://<goIp>:<backup>
+    // even when the main proxy/panel dies but WiFi Direct is still up.
+    // Defaults to panelPort + 1 (8284) when not explicitly set.
+    val backupPanelPort: Int = 8284,
     // Hours between background update checks; 0 = disabled. Default 6h.
     val updateCheckIntervalHours: Int = 6
 ) {
@@ -198,6 +204,12 @@ object ConfigManager {
                 autoRestartOnWifiReturn = p.getProperty("auto_restart_on_wifi_return", defaultConfig.autoRestartOnWifiReturn.toString()).toBoolean(),
                 panelPort = p.getProperty("panel_port", (defaultConfig.httpPort + 1).toString()).toIntOrNull()?.coerceIn(1, 65535)
                     ?: (defaultConfig.httpPort + 1),
+                backupPanelPort = run {
+                    val panel = p.getProperty("panel_port", (defaultConfig.httpPort + 1).toString()).toIntOrNull()
+                        ?.coerceIn(1, 65535) ?: (defaultConfig.httpPort + 1)
+                    p.getProperty("backup_panel_port", (panel + 1).toString()).toIntOrNull()?.coerceIn(1, 65535)
+                        ?: (panel + 1).coerceIn(1, 65535)
+                },
                 updateCheckIntervalHours = p.getProperty("update_check_interval_hours", defaultConfig.updateCheckIntervalHours.toString()).toIntOrNull()?.coerceIn(0, 24)
                     ?: defaultConfig.updateCheckIntervalHours
             )
@@ -231,6 +243,7 @@ object ConfigManager {
             "keep_retrying_reform=${config.keepRetryingReform}",
             "auto_restart_on_wifi_return=${config.autoRestartOnWifiReturn}",
             "panel_port=${config.panelPort}",
+            "backup_panel_port=${config.backupPanelPort}",
             "update_check_interval_hours=${config.updateCheckIntervalHours}"
         )
         val text = lines.joinToString("\n") + "\n"

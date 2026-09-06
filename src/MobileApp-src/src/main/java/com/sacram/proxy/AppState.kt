@@ -7,7 +7,8 @@ data class ApInfo(
     val passphrase: String = "",
     val goIp: String = "",
     val clients: Int = 0,
-    val panelPort: Int = 0
+    val panelPort: Int = 0,
+    val backupPanelPort: Int = 0
 )
 
 object AppState {

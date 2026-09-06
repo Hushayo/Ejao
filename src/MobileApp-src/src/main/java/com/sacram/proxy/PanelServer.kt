@@ -394,6 +394,7 @@ class PanelServer(
                 <div class="li"><span class="li-k">Panel port</span><span class="li-v mono" id="v-panelport">$port</span></div>
                 <div class="li"><span class="li-k">SOCKS5</span><span class="li-v mono">${escapeHtml(info.goIp)}:${cfg.port}</span></div>
                 <div class="li"><span class="li-k">HTTP</span><span class="li-v mono">${escapeHtml(info.goIp)}:${cfg.httpPort}</span></div>
+                <div class="li"><span class="li-k">Backup panel</span><span class="li-v mono">http://${escapeHtml(info.goIp)}:${if (info.backupPanelPort > 0) info.backupPanelPort else cfg.backupPanelPort}/</span></div>
             </div>
         </section>
 
@@ -427,6 +428,7 @@ class PanelServer(
 
                 <button type="submit" class="btn">Save settings</button>
                 <p class="note">Changes apply live. The panel runs on its own port ($port) and is reachable by anyone on the WiFi Direct network. If your browser sends all traffic through the proxy, add <code>${escapeHtml(info.goIp)}</code> to its proxy bypass list to reach this panel directly.</p>
+                <p class="note">Emergency: if the proxy goes down but WiFi Direct stays up, restart from the backup dashboard at <code>http://${escapeHtml(info.goIp)}:${if (info.backupPanelPort > 0) info.backupPanelPort else cfg.backupPanelPort}/</code> - it runs on its own port and survives proxy crashes.</p>
             </section>
         </form>
 

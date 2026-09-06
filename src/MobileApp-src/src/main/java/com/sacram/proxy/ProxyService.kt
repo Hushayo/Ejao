@@ -71,6 +71,13 @@ class ProxyService : Service() {
     private var socks4: Socks4Server? = null
     private var http: HttpProxyServer? = null
     private var panel: PanelServer? = null
+    // Emergency backup dashboard: started right after the WiFi Direct group
+    // forms and deliberately NOT stopped by restartProxy(), so it stays
+    // reachable over WiFi Direct even when the main proxy/panel dies.
+    // Only torn down in onDestroy().
+    private var backupPanel: BackupPanelServer? = null
+    private var backupPanelPortActual: Int = 0
+    private var proxyDownNotified = false
     private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var fileObserver: FileObserver? = null
@@ -204,6 +211,12 @@ class ProxyService : Service() {
             val actualPass = groupPass.ifEmpty { config.password }
             Log.i(TAG, "group formed ssid=$actualSsid goIp=$goIp")
 
+            // Backup dashboard goes up FIRST, before the main proxies, so it
+            // is already reachable even if a main proxy bind fails. It runs
+            // on its own port/scope and survives proxy crashes + restarts.
+            startBackupPanel(goIp, config)
+            proxyDownNotified = false
+
             val hybrid = config.isHybrid()
             val httpMode = config.effectiveMode() == "http"
             AppState.httpMode.value = httpMode || hybrid
@@ -223,9 +236,9 @@ class ProxyService : Service() {
                     server.start()
                     Log.i(TAG, "HTTP proxy started on $goIp:${config.httpPort}")
                     startSocks4(goIp, config)
-                    AppState.apInfo.value = ApInfo(actualSsid, actualPass, goIp, 0, config.panelPort)
+                    AppState.apInfo.value = ApInfo(actualSsid, actualPass, goIp, 0, config.panelPort, backupPanelPortActual)
                     updateStatus("RUNNING (HTTP) - connect to '$actualSsid' then HTTP proxy $goIp:${config.httpPort} and SOCKS4 $goIp:${config.socks4Port}")
-                    updateNotification(actualSsid, actualPass, goIp, config.httpPort, 0, false, config.panelPort)
+                    updateNotification(actualSsid, actualPass, goIp, config.httpPort, 0, false, config.panelPort, backupPanelPortActual)
                     Telemetry.send(this, "proxy_started", mapOf("mode" to "http", "port" to "${config.httpPort}", "wifi_auto_ok" to "$wifiOk") + Telemetry.batteryInfo(this))
                 }
                 hybrid -> {
@@ -250,9 +263,9 @@ class ProxyService : Service() {
                     server.start()
                     Log.i(TAG, "HTTP proxy started on $goIp:${config.httpPort}")
                     startSocks4(goIp, config)
-                    AppState.apInfo.value = ApInfo(actualSsid, actualPass, goIp, 0, config.panelPort)
+                    AppState.apInfo.value = ApInfo(actualSsid, actualPass, goIp, 0, config.panelPort, backupPanelPortActual)
                     updateStatus("RUNNING (HYBRID) - connect to '$actualSsid' then SOCKS5 $goIp:${config.port} and HTTP $goIp:${config.httpPort} and SOCKS4 $goIp:${config.socks4Port}")
-                    updateNotification(actualSsid, actualPass, goIp, config.port, config.httpPort, true, config.panelPort)
+                    updateNotification(actualSsid, actualPass, goIp, config.port, config.httpPort, true, config.panelPort, backupPanelPortActual)
                     Telemetry.send(this, "proxy_started", mapOf("mode" to "hybrid", "port" to "${config.port}", "http_port" to "${config.httpPort}", "wifi_auto_ok" to "$wifiOk") + Telemetry.batteryInfo(this))
                 }
                 else -> {
@@ -265,9 +278,9 @@ class ProxyService : Service() {
                     ).also { it.start() }
                     Log.i(TAG, "SOCKS5 started on $goIp:${config.port}")
                     startSocks4(goIp, config)
-                    AppState.apInfo.value = ApInfo(actualSsid, actualPass, goIp, 0, config.panelPort)
+                    AppState.apInfo.value = ApInfo(actualSsid, actualPass, goIp, 0, config.panelPort, backupPanelPortActual)
                     updateStatus("RUNNING - connect to '$actualSsid' then SOCKS5 $goIp:${config.port} and SOCKS4 $goIp:${config.socks4Port}")
-                    updateNotification(actualSsid, actualPass, goIp, config.port, 0, false, config.panelPort)
+                    updateNotification(actualSsid, actualPass, goIp, config.port, 0, false, config.panelPort, backupPanelPortActual)
                     Telemetry.send(this, "proxy_started", mapOf("mode" to "socks5", "port" to "${config.port}", "wifi_auto_ok" to "$wifiOk") + Telemetry.batteryInfo(this))
                 }
             }
@@ -292,14 +305,57 @@ class ProxyService : Service() {
                 Log.i(TAG, "Control panel started on $goIp:${config.panelPort}")
                 updateStatus("Panel: http://$goIp:${config.panelPort}/")
             }
+            if (backupPanelPortActual > 0) {
+                updateStatus("Backup panel (survives proxy crash): http://$goIp:$backupPanelPortActual/")
+                // Refresh apInfo/notification once more so both ports are visible.
+                AppState.apInfo.value = AppState.apInfo.value.copy(backupPanelPort = backupPanelPortActual)
+                updateNotification(
+                    AppState.apInfo.value.ssid.ifEmpty { actualSsid },
+                    AppState.apInfo.value.passphrase.ifEmpty { actualPass },
+                    goIp,
+                    if (httpMode && !hybrid) config.httpPort else config.port,
+                    if (hybrid) config.httpPort else 0,
+                    hybrid,
+                    config.panelPort,
+                    backupPanelPortActual
+                )
+            }
 
-            // client count poller + group-keepalive + health heartbeat (every 5 min)
+            // client count poller + group-keepalive + proxy health + heartbeat (every 5 min)
             var beats = 0
             var groupRecreateGuard = false
             var groupRecreateCount = 0
             val groupRecreateMax = 21
             while (currentCoroutineContext().isActive && started.get()) {
                 delay(5000)
+                // Self-heal the backup dashboard: if it died, bring it back so
+                // there is always a restart path over WiFi Direct.
+                if ((backupPanel == null || backupPanel?.isRunning() != true) && started.get()) {
+                    val lastGoIp = AppState.apInfo.value.goIp.ifEmpty { goIp }
+                    startBackupPanel(lastGoIp, config)
+                }
+                // Proxy health probe: if all expected proxy ports refuse
+                // localhost connections, the proxy is down. The WiFi Direct
+                // group may still be up (group != null below confirms it on
+                // the next poll) - point the user at the backup panel which
+                // is still serving on its own port/scope.
+                if (isMainProxyDown(config)) {
+                    val bPort = backupPanelPortActual
+                    val bUrl = if (bPort > 0) "Backup restart: http://${AppState.apInfo.value.goIp.ifEmpty { goIp }}:$bPort/" else "Backup panel unavailable - toggle proxy off/on in app"
+                    // Only overwrite the status line when we are not already
+                    // reporting group re-forming; group state is resolved below.
+                    if (!proxyDownNotified) {
+                        proxyDownNotified = true
+                        Log.w(TAG, "Main proxy ports closed but service alive - backup panel at $bUrl")
+                        Telemetry.send(this, "proxy_down_backup_available", mapOf("backup_port" to "$bPort") + Telemetry.batteryInfo(this))
+                    }
+                    AppState.status.value = "PROXY DOWN - WiFi Direct still up. $bUrl"
+                } else {
+                    if (proxyDownNotified) {
+                        proxyDownNotified = false
+                        Log.i(TAG, "Main proxy recovered - clearing PROXY DOWN state")
+                    }
+                }
                 p2p.requestGroupInfo { g ->
                     if (g == null) {
                         // Android silently tears down the P2P group on inactivity
@@ -333,7 +389,12 @@ class ProxyService : Service() {
                     } else {
                         val n = g.clientList?.size ?: 0
                         AppState.apInfo.value = AppState.apInfo.value.copy(clients = n)
-                        AppState.status.value = "RUNNING - clients connected: $n"
+                        if (proxyDownNotified && backupPanelPortActual > 0) {
+                            val bIp = AppState.apInfo.value.goIp
+                            AppState.status.value = "PROXY DOWN - WiFi Direct still up (clients: $n). Restart: http://$bIp:$backupPanelPortActual/"
+                        } else {
+                            AppState.status.value = "RUNNING - clients connected: $n"
+                        }
                     }
                 }
                 beats++
@@ -402,11 +463,90 @@ class ProxyService : Service() {
         Log.i(TAG, "SOCKS4 started on $goIp:${config.socks4Port}")
     }
 
-    private fun handlePanelRestart() {        val cfg = ConfigManager.load(this)
+    private fun handlePanelRestart() {
+        val cfg = ConfigManager.load(this)
         if (cfg.requireApprovalRestart) {
             PanelApproval.submit(mapOf("action" to "restart"))
         } else {
             restartProxy()
+        }
+    }
+
+    /**
+     * Starts the emergency backup dashboard on its own port/scope. Safe to
+     * call twice: if one is already running it is kept as-is. The bound
+     * port (with +1..+5 fallback) is stored in [backupPanelPortActual] and
+     * mirrored into AppState so the main panel + notification can link it.
+     */
+    private fun startBackupPanel(goIp: String, config: AppConfig) {
+        try {
+            if (backupPanel?.isRunning() == true && backupPanelPortActual > 0) {
+                AppState.apInfo.value = AppState.apInfo.value.copy(backupPanelPort = backupPanelPortActual)
+                return
+            }
+            runCatching { backupPanel?.stop() }
+            backupPanel = null
+            val wanted = config.backupPanelPort.coerceIn(1, 65535)
+            val server = BackupPanelServer(
+                requestedPort = wanted,
+                context = this,
+                onRestartRequest = { handlePanelRestart() },
+                onLog = { updateStatus("  $it") }
+            )
+            val bound = server.start()
+            if (bound > 0) {
+                backupPanel = server
+                backupPanelPortActual = bound
+                AppState.apInfo.value = AppState.apInfo.value.copy(
+                    goIp = goIp.ifEmpty { AppState.apInfo.value.goIp },
+                    backupPanelPort = bound
+                )
+                Log.i(TAG, "Backup panel started on $goIp:$bound (survives proxy crash)")
+                updateStatus("Backup panel: http://$goIp:$bound/ (use if proxy goes down)")
+            } else {
+                backupPanelPortActual = 0
+                Log.w(TAG, "Backup panel failed to bind (wanted $wanted)")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "startBackupPanel failed: ${e.message}")
+            backupPanelPortActual = 0
+        }
+    }
+
+    /**
+     * Localhost probe of the expected main-proxy traffic ports. Returns true
+     * when NONE of them accept a connection (proxy down). The backup panel
+     * port is deliberately excluded - it staying up is the whole point.
+     */
+    private fun isMainProxyDown(config: AppConfig): Boolean {
+        return try {
+            val mode = config.effectiveMode()
+            val ports = when (mode) {
+                "http" -> listOf(config.httpPort, config.socks4Port)
+                "socks5" -> listOf(config.port, config.socks4Port)
+                else -> listOf(config.port, config.httpPort, config.socks4Port)
+            }
+            // No proxy objects yet (still starting) -> not "down", just booting.
+            if (socks == null && http == null && socks4 == null && panel == null) return false
+            for (p in ports) {
+                if (isLocalPortOpen(p)) return false
+            }
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun isLocalPortOpen(port: Int): Boolean {
+        if (port <= 0 || port > 65535) return false
+        return try {
+            java.net.Socket().use { s ->
+                s.tcpNoDelay = true
+                s.connect(java.net.InetSocketAddress("127.0.0.1", port), 500)
+                true
+            }
+        } catch (_: Exception) {
+            false
         }
     }
 
@@ -449,7 +589,8 @@ class ProxyService : Service() {
                         if (httpMode) config.httpPort else config.port,
                         if (hybrid) config.httpPort else 0,
                         hybrid,
-                        config.panelPort
+                        config.panelPort,
+                        backupPanelPortActual
                     )
                     Log.i(TAG, "WiFi Direct group recreated (kept alive) ssid=${g.networkName} goIp=$goIp")
                 }
@@ -464,6 +605,9 @@ class ProxyService : Service() {
         scope.launch {
             Telemetry.send(this@ProxyService, "proxy_restart", mapOf("reason" to "config_changed", "uptime" to uptimeSeconds()) + Telemetry.batteryInfo(this@ProxyService))
             updateStatus("Config changed, restarting...")
+            // NOTE: backupPanel is deliberately NOT stopped here - it stays up
+            // over WiFi Direct so there is always a restart path even if the
+            // new pipeline fails to bind the main proxy ports.
             runCatching { socks?.stop() }
             runCatching { socks4?.stop() }
             runCatching { http?.stop() }
@@ -472,6 +616,7 @@ class ProxyService : Service() {
             socks4 = null
             http = null
             panel = null
+            proxyDownNotified = false
             val p2p = WifiDirectManager(this@ProxyService)
             p2p.removeGroup { }
             delay(1500)
@@ -492,10 +637,14 @@ class ProxyService : Service() {
         runCatching { socks4?.stop() }
         runCatching { http?.stop() }
         runCatching { panel?.stop() }
+        runCatching { backupPanel?.stop() }
         socks = null
         socks4 = null
         http = null
         panel = null
+        backupPanel = null
+        backupPanelPortActual = 0
+        proxyDownNotified = false
         runCatching { WifiDirectManager(this).removeGroup() }
         releaseLocks()
         scope.cancel()
@@ -567,13 +716,14 @@ class ProxyService : Service() {
             .build()
     }
 
-    private fun updateNotification(ssid: String, pass: String, ip: String, socksPort: Int, httpPort: Int, hybrid: Boolean, panelPort: Int = 0) {
+    private fun updateNotification(ssid: String, pass: String, ip: String, socksPort: Int, httpPort: Int, hybrid: Boolean, panelPort: Int = 0, backupPort: Int = 0) {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val panelLine = if (panelPort > 0) "\nPanel: $ip:$panelPort" else ""
+        val backupLine = if (backupPort > 0) "\nBackup: $ip:$backupPort" else ""
         val detail = if (hybrid) {
-            "SSID: $ssid\nSOCKS5: $ip:$socksPort\nHTTP: $ip:$httpPort\nPassword: $pass$panelLine"
+            "SSID: $ssid\nSOCKS5: $ip:$socksPort\nHTTP: $ip:$httpPort\nPassword: $pass$panelLine$backupLine"
         } else {
-            "SSID: $ssid\nIP: $ip:$socksPort\nPassword: $pass$panelLine"
+            "SSID: $ssid\nIP: $ip:$socksPort\nPassword: $pass$panelLine$backupLine"
         }
         val summary = if (hybrid) "$ssid | SOCKS5 $ip:$socksPort | HTTP $ip:$httpPort | pass: $pass"
         else "$ssid | $ip:$socksPort | pass: $pass"

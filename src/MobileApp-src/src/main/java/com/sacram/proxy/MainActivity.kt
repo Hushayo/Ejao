@@ -561,11 +561,13 @@ class MainActivity : AppCompatActivity() {
             "HTTP:      ${info.goIp}:${etHttpPort.text.ifEmpty { "8282" }}"
         )
         if (info.panelPort > 0) infoLines.add("Panel:     http://${info.goIp}:${info.panelPort}/")
+        if (info.backupPanelPort > 0) infoLines.add("Backup:    http://${info.goIp}:${info.backupPanelPort}/ (use if proxy down)")
         infoLines.add("Clients:   ${info.clients}")
         tvInfo.text = infoLines.joinToString("\n")
-        tvPanelUrl.text = if (info.panelPort > 0)
-            "Control panel runs on its own port:\nhttp://${info.goIp}:${info.panelPort}/"
-        else ""
+        tvPanelUrl.text = buildString {
+            if (info.panelPort > 0) append("Control panel runs on its own port:\nhttp://${info.goIp}:${info.panelPort}/\n")
+            if (info.backupPanelPort > 0) append("Backup panel (survives proxy crash):\nhttp://${info.goIp}:${info.backupPanelPort}/")
+        }.trim().ifEmpty { "" }
     }
 
     private fun startSelectedProxy() {
