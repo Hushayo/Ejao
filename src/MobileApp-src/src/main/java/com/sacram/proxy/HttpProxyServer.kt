@@ -188,7 +188,12 @@ class HttpProxyServer(
             }
         }
         netCallback = cb
-        cm.requestNetwork(request, cb)
+        try {
+            cm.requestNetwork(request, cb)
+        } catch (e: Exception) {
+            onLog("WARNING: cellular request failed (${e.message}) - using default route")
+            netCallback = null
+        }
         scope.launch {
             delay(3000)
             if (cellularNetwork == null && lastGoodCellular == null) {

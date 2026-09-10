@@ -94,13 +94,22 @@ class MainActivity : AppCompatActivity() {
         ActivityResultContracts.RequestMultiplePermissions()
     ) {
         Log.i(TAG, "permission results: $it")
-        if (it.values.all { granted -> granted }) {
-            startProxy()
-        } else {
-            val denied = it.filterValues { !it }.keys.joinToString(",")
-            Log.e(TAG, "permissions denied: $denied")
-            Toast.makeText(this, "Some permissions denied - starting anyway, WiFi Direct may fail", Toast.LENGTH_LONG).show()
-            startProxy()
+        try {
+            if (it.values.all { granted -> granted }) {
+                startProxy()
+            } else {
+                val denied = it.filterValues { !it }.keys.joinToString(",")
+                Log.e(TAG, "permissions denied: $denied")
+                runCatching {
+                    Toast.makeText(this, "Some permissions denied - starting anyway, WiFi Direct may fail", Toast.LENGTH_LONG).show()
+                }
+                startProxy()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "permission handler failed", e)
+            runCatching {
+                Toast.makeText(this, "Couldn't start proxy: ${e.message}", Toast.LENGTH_LONG).show()
+            }
         }
     }
 
@@ -119,7 +128,8 @@ class MainActivity : AppCompatActivity() {
         etProxyType = findViewById(R.id.etProxyType)
         etHttpPort = findViewById(R.id.etHttpPort)
 
-        val config = ConfigManager.ensureConfig(this)
+        val config = runCatching { ConfigManager.ensureConfig(this) }
+            .getOrDefault(ConfigManager.defaultConfig)
         etSsid.setText(config.ssid)
         etPass.setText(config.password)
         etPort.setText(config.port.toString())
@@ -137,25 +147,31 @@ class MainActivity : AppCompatActivity() {
         swAutoUpdate.isChecked = autoUpdateOn
         tilUpdateCheckInterval.visibility = if (autoUpdateOn) View.VISIBLE else View.GONE
         swAutoUpdate.setOnCheckedChangeListener { _, isChecked ->
-            tilUpdateCheckInterval.visibility = if (isChecked) View.VISIBLE else View.GONE
-            UpdateChecker.scheduleCheck(this, chosenUpdateIntervalHours())
-            autosave()
+            try {
+                tilUpdateCheckInterval.visibility = if (isChecked) View.VISIBLE else View.GONE
+                runCatching { UpdateChecker.scheduleCheck(this, chosenUpdateIntervalHours()) }
+                autosave()
+            } catch (e: Exception) {
+                Log.e(TAG, "auto-update toggle failed", e)
+            }
         }
         etKeepaliveUrl.setText(config.keepaliveUrl)
         etKeepaliveInterval.setText((config.keepaliveIntervalMs / 1000).toString())
         chkRequireApprovalRestart.isChecked = config.requireApprovalRestart
-        chkRequireApprovalRestart.setOnCheckedChangeListener { _, _ -> autosave() }
+        chkRequireApprovalRestart.setOnCheckedChangeListener { _, _ -> runCatching { autosave() } }
         chkDisableBandSelector.isChecked = config.disableBandSelector
         chkDisableBandSelector.setOnCheckedChangeListener { _, _ ->
-            applyBandSelectorVisibility(chkDisableBandSelector.isChecked)
-            autosave()
+            runCatching {
+                applyBandSelectorVisibility(chkDisableBandSelector.isChecked)
+                autosave()
+            }
         }
         chkKeepRetryingReform = findViewById(R.id.chkKeepRetryingReform)
         chkKeepRetryingReform.isChecked = config.keepRetryingReform
-        chkKeepRetryingReform.setOnCheckedChangeListener { _, _ -> autosave() }
+        chkKeepRetryingReform.setOnCheckedChangeListener { _, _ -> runCatching { autosave() } }
         chkAutoRestartOnWifiReturn = findViewById(R.id.chkAutoRestartOnWifiReturn)
         chkAutoRestartOnWifiReturn.isChecked = config.autoRestartOnWifiReturn
-        chkAutoRestartOnWifiReturn.setOnCheckedChangeListener { _, _ -> autosave() }
+        chkAutoRestartOnWifiReturn.setOnCheckedChangeListener { _, _ -> runCatching { autosave() } }
         tilPort = findViewById(R.id.tilPort)
         tilHttpPort = findViewById(R.id.tilHttpPort)
         setupProxyTypeDropdown(config.proxyType)
@@ -163,13 +179,15 @@ class MainActivity : AppCompatActivity() {
         setupBandDropdown(config.band)
         applyBandSelectorVisibility(config.disableBandSelector)
         setupUpdateIntervalDropdown(config.updateCheckIntervalHours)
-        findViewById<TextView>(R.id.tvConfigPath).text =
-            "config.txt: ${ConfigManager.externalConfigFile(this).absolutePath}"
+        runCatching {
+            findViewById<TextView>(R.id.tvConfigPath).text =
+                "config.txt: ${runCatching { ConfigManager.externalConfigFile(this).absolutePath }.getOrDefault("config.txt")}"
+        }
 
-        setupTabs()
-        setupAutosave()
-        setupEasterEgg()
-        observePanelApproval()
+        runCatching { setupTabs() }
+        runCatching { setupAutosave() }
+        runCatching { setupEasterEgg() }
+        runCatching { observePanelApproval() }
 
         // Notify if no valid password is set, but don't block anything
         if (config.password.length !in 8..63) {
@@ -178,44 +196,59 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnToggle.setOnClickListener {
-            if (AppState.running.value) {
-                ProxyState.setShouldRun(this, false)
-                stopService(Intent(this, ProxyService::class.java))
-            } else {
-                startSelectedProxy()
+            runCatching {
+                if (AppState.running.value) {
+                    ProxyState.setShouldRun(this, false)
+                    stopService(Intent(this, ProxyService::class.java))
+                } else {
+                    startSelectedProxy()
+                }
+            }.onFailure { e ->
+                Log.e(TAG, "toggle failed", e)
+                runCatching {
+                    Toast.makeText(this, "Couldn't toggle proxy: ${e.message}", Toast.LENGTH_LONG).show()
+                }
             }
         }
 
-        findViewById<Button>(R.id.btnWiki).setOnClickListener { openWiki() }
-        findViewById<Button>(R.id.btnBattery).setOnClickListener { requestBatteryExemption() }
-        findViewById<Button>(R.id.btnAutostart).setOnClickListener { openAutostartSettings() }
+        findViewById<Button>(R.id.btnWiki).setOnClickListener { runCatching { openWiki() } }
+        findViewById<Button>(R.id.btnBattery).setOnClickListener { runCatching { requestBatteryExemption() } }
+        findViewById<Button>(R.id.btnAutostart).setOnClickListener { runCatching { openAutostartSettings() } }
 
         btnCheckUpdate = findViewById(R.id.btnCheckUpdate)
         tvUpdateStatus = findViewById(R.id.tvUpdateStatus)
         tvUpdateStatus.text = "You're running ${BuildConfig.VERSION_NAME} - tap to check for updates."
         btnCheckUpdate.setOnClickListener {
-            val ready = AppState.updateAvailable.value
-            val file = UpdateChecker.downloadedApkFile(this)
-            if (ready != null && file.exists()) {
-                launchInstaller(file)
-            } else {
-                checkForUpdate()
+            runCatching {
+                val ready = AppState.updateAvailable.value
+                val file = runCatching { UpdateChecker.downloadedApkFile(this) }.getOrNull()
+                if (ready != null && file != null && file.exists()) {
+                    launchInstaller(file)
+                } else {
+                    checkForUpdate()
+                }
+            }.onFailure { e ->
+                Log.e(TAG, "update button failed", e)
+                runCatching { tvUpdateStatus.text = "Update check failed: ${e.message}" }
             }
         }
-        UpdateChecker.scheduleCheck(this, config.updateCheckIntervalHours)
+        runCatching { UpdateChecker.scheduleCheck(this, config.updateCheckIntervalHours) }
 
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                launch { AppState.status.collect { tvStatus.text = it } }
-                launch { AppState.apInfo.collect { renderInfo(it) } }
-                launch { AppState.running.collect { renderRunning(it) } }
+                launch { AppState.status.collect { runCatching { tvStatus.text = it } } }
+                launch { AppState.apInfo.collect { runCatching { renderInfo(it) } } }
+                launch { AppState.running.collect { runCatching { renderRunning(it) } } }
                 launch {
                     AppState.updateAvailable.collect { tag ->
-                        if (tag != null && UpdateChecker.downloadedApkFile(this@MainActivity).exists()) {
-                            btnCheckUpdate.text = "Install update ($tag)"
-                            tvUpdateStatus.text = "Update $tag downloaded in the background - tap to install."
-                        } else {
-                            btnCheckUpdate.text = "Check for updates"
+                        runCatching {
+                            val apkExists = runCatching { UpdateChecker.downloadedApkFile(this@MainActivity).exists() }.getOrDefault(false)
+                            if (tag != null && apkExists) {
+                                btnCheckUpdate.text = "Install update ($tag)"
+                                tvUpdateStatus.text = "Update $tag downloaded in the background - tap to install."
+                            } else {
+                                btnCheckUpdate.text = "Check for updates"
+                            }
                         }
                     }
                 }
@@ -252,9 +285,14 @@ class MainActivity : AppCompatActivity() {
             val target = if (selected == 0) btnProxy else btnKeep
             if (target.width == 0 || target.height == 0) return
             val params = indicator.layoutParams
-            params.width = target.width
-            params.height = target.height
-            indicator.layoutParams = params
+            // Only touch layoutParams when the size actually changed: assigning
+            // them always triggers requestLayout, and this runs from pill's own
+            // onLayoutChangeListener, so an unconditional assign loops forever.
+            if (params.width != target.width || params.height != target.height) {
+                params.width = target.width
+                params.height = target.height
+                indicator.layoutParams = params
+            }
             if (animate) {
                 indicator.animate().translationX(target.left.toFloat())
                     .setDuration(220)
@@ -320,11 +358,13 @@ class MainActivity : AppCompatActivity() {
         ) {
             override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
                 val v = super.getView(position, convertView, parent)
-                val tv = v.findViewById<TextView>(android.R.id.text1)
-                tv.setTextColor(
-                    if (position in EXPERIMENTAL_TYPES) 0xFFC62828.toInt()
-                    else ContextCompat.getColor(this@MainActivity, R.color.text_primary)
-                )
+                runCatching {
+                    val tv = v.findViewById<TextView>(android.R.id.text1)
+                    tv?.setTextColor(
+                        if (position in EXPERIMENTAL_TYPES) 0xFFC62828.toInt()
+                        else ContextCompat.getColor(this@MainActivity, R.color.text_primary)
+                    )
+                }
                 return v
             }
         }
@@ -332,18 +372,22 @@ class MainActivity : AppCompatActivity() {
         etProxyType.setText(PROXY_TYPE_LABELS.getOrElse(selected) { PROXY_TYPE_LABELS[0] }, false)
         applyProxyTypeColor(selected)
         etProxyType.setOnItemClickListener { _, _, position, _ ->
-            etProxyType.setText(PROXY_TYPE_LABELS[position], false)
-            applyProxyTypeColor(position)
-            updatePortVisibility(position)
-            autosave()
+            runCatching {
+                etProxyType.setText(PROXY_TYPE_LABELS[position], false)
+                applyProxyTypeColor(position)
+                updatePortVisibility(position)
+                autosave()
+            }
         }
     }
 
     private fun applyProxyTypeColor(position: Int) {
-        etProxyType.setTextColor(
-            if (position in EXPERIMENTAL_TYPES) 0xFFC62828.toInt()
-            else ContextCompat.getColor(this, R.color.text_primary)
-        )
+        runCatching {
+            etProxyType.setTextColor(
+                if (position in EXPERIMENTAL_TYPES) 0xFFC62828.toInt()
+                else ContextCompat.getColor(this, R.color.text_primary)
+            )
+        }
     }
 
     /**
@@ -352,7 +396,9 @@ class MainActivity : AppCompatActivity() {
      * back to the default band (see ProxyService).
      */
     private fun applyBandSelectorVisibility(disabled: Boolean) {
-        tilBand.visibility = if (disabled) View.GONE else View.VISIBLE
+        runCatching {
+            tilBand.visibility = if (disabled) View.GONE else View.VISIBLE
+        }
     }
 
     private fun setupBandDropdown(selected: String) {
@@ -361,8 +407,10 @@ class MainActivity : AppCompatActivity() {
         val idx = BAND_VALUES.indexOf(selected).let { if (it < 0) 0 else it }
         etBand.setText(BAND_LABELS[idx], false)
         etBand.setOnItemClickListener { _, _, position, _ ->
-            etBand.setText(BAND_LABELS[position], false)
-            autosave()
+            runCatching {
+                etBand.setText(BAND_LABELS[position], false)
+                autosave()
+            }
         }
     }
 
@@ -377,9 +425,11 @@ class MainActivity : AppCompatActivity() {
         val idx = UPDATE_INTERVAL_VALUES.indexOf(selectedHours).let { if (it < 0) 2 else it }
         etUpdateCheckInterval.setText(UPDATE_INTERVAL_LABELS[idx], false)
         etUpdateCheckInterval.setOnItemClickListener { _, _, position, _ ->
-            etUpdateCheckInterval.setText(UPDATE_INTERVAL_LABELS[position], false)
-            UpdateChecker.scheduleCheck(this, UPDATE_INTERVAL_VALUES[position])
-            autosave()
+            runCatching {
+                etUpdateCheckInterval.setText(UPDATE_INTERVAL_LABELS[position], false)
+                UpdateChecker.scheduleCheck(this, UPDATE_INTERVAL_VALUES[position])
+                autosave()
+            }
         }
     }
 
@@ -388,8 +438,12 @@ class MainActivity : AppCompatActivity() {
      * is off, otherwise the chosen frequency from the dropdown.
      */
     private fun chosenUpdateIntervalHours(): Int {
-        if (!swAutoUpdate.isChecked) return 0
-        return UPDATE_INTERVAL_VALUES.getOrElse(UPDATE_INTERVAL_LABELS.indexOf(etUpdateCheckInterval.text.toString())) { 2 }
+        return try {
+            if (!swAutoUpdate.isChecked) return 0
+            UPDATE_INTERVAL_VALUES.getOrElse(UPDATE_INTERVAL_LABELS.indexOf(etUpdateCheckInterval.text.toString())) { 2 }
+        } catch (_: Exception) {
+            0
+        }
     }
 
     /**
@@ -399,12 +453,16 @@ class MainActivity : AppCompatActivity() {
      * A single visible port expands to full width.
      */
     private fun updatePortVisibility(proxyType: Int) {
-        val showSocks = proxyType != 2
-        val showHttp = proxyType == 0 || proxyType == 2 || proxyType == 3
-        tilPort.visibility = if (showSocks) View.VISIBLE else View.GONE
-        tilHttpPort.visibility = if (showHttp) View.VISIBLE else View.GONE
-        (tilPort.layoutParams as LinearLayout.LayoutParams).weight = if (showSocks && !showHttp) 2f else 1f
-        (tilHttpPort.layoutParams as LinearLayout.LayoutParams).weight = if (showHttp && !showSocks) 2f else 1f
+        runCatching {
+            val showSocks = proxyType != 2
+            val showHttp = proxyType == 0 || proxyType == 2 || proxyType == 3
+            tilPort.visibility = if (showSocks) View.VISIBLE else View.GONE
+            tilHttpPort.visibility = if (showHttp) View.VISIBLE else View.GONE
+            (tilPort.layoutParams as? LinearLayout.LayoutParams)?.weight =
+                if (showSocks && !showHttp) 2f else 1f
+            (tilHttpPort.layoutParams as? LinearLayout.LayoutParams)?.weight =
+                if (showHttp && !showSocks) 2f else 1f
+        }
     }
 
     private var eggTaps = 0
@@ -413,13 +471,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupEasterEgg() {
         tvStatus.setOnClickListener {
-            if (++eggTaps >= 7) {
-                eggTaps = 0
-                Toast.makeText(
-                    this,
-                    "\uD83D\uDEF0 You found the Sacram easter egg - stay proxy, my friend.",
-                    Toast.LENGTH_LONG
-                ).show()
+            runCatching {
+                if (++eggTaps >= 7) {
+                    eggTaps = 0
+                    Toast.makeText(
+                        this,
+                        "\uD83D\uDEF0 You found the Sacram easter egg - stay proxy, my friend.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
             }
         }
     }
@@ -432,60 +492,85 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 PanelApproval.pending.collect { req ->
-                    if (req == null) {
-                        approvalDialog?.dismiss()
-                        approvalDialog = null
-                        return@collect
+                    runCatching {
+                        if (req == null) {
+                            runCatching { approvalDialog?.dismiss() }
+                            approvalDialog = null
+                            return@collect
+                        }
+                        showApprovalDialog(req)
                     }
-                    showApprovalDialog(req)
                 }
             }
         }
     }
 
     private fun showApprovalDialog(req: PanelApproval.Request) {
-        approvalDialog?.takeIf { it.isShowing }?.dismiss()
+        try {
+            approvalDialog?.takeIf { it.isShowing }?.dismiss()
+        } catch (_: Exception) {
+        }
         val isRestart = req.fields["action"] == "restart"
         val summary = if (isRestart) {
             "Restart the proxy + hotspot."
         } else {
-            req.fields.entries.joinToString("\n") { "${it.key} = ${it.value}" }
+            runCatching {
+                req.fields.entries.joinToString("\n") { "${it.key} = ${it.value}" }
+            }.getOrDefault("(unreadable change)")
         }
-        val dialog = MaterialAlertDialogBuilder(this)
-            .setTitle("Approve panel change?")
-            .setMessage(
-                "A device on the WiFi requested these setting changes:\n\n$summary\n\n" +
-                    "Approve within 10 seconds, otherwise the request is dropped."
-            )
-            .setCancelable(false)
-            .setPositiveButton("Approve") { _, _ -> PanelApproval.approve(this) }
-            .setNegativeButton("Deny") { _, _ -> PanelApproval.deny() }
-            .create()
+        val dialog = try {
+            MaterialAlertDialogBuilder(this)
+                .setTitle("Approve panel change?")
+                .setMessage(
+                    "A device on the WiFi requested these setting changes:\n\n$summary\n\n" +
+                        "Approve within 10 seconds, otherwise the request is dropped."
+                )
+                .setCancelable(false)
+                .setPositiveButton("Approve") { _, _ -> runCatching { PanelApproval.approve(this) } }
+                .setNegativeButton("Deny") { _, _ -> runCatching { PanelApproval.deny() } }
+                .create()
+        } catch (e: Exception) {
+            Log.e(TAG, "approval dialog build failed", e)
+            PanelApproval.deny()
+            return
+        }
         dialog.setOnDismissListener {
-            if (PanelApproval.current()?.id == req.id) PanelApproval.deny()
-            if (approvalDialog === dialog) approvalDialog = null
+            runCatching {
+                if (PanelApproval.current()?.id == req.id) PanelApproval.deny()
+                if (approvalDialog === dialog) approvalDialog = null
+            }
         }
         approvalDialog = dialog
-        dialog.show()
+        try {
+            if (!isFinishing && !isDestroyed) dialog.show()
+            else PanelApproval.deny()
+        } catch (e: Exception) {
+            Log.e(TAG, "approval dialog show failed", e)
+            PanelApproval.deny()
+            return
+        }
         lifecycleScope.launch {
             delay(PanelApproval.APPROVE_WINDOW_MS)
-            if (PanelApproval.current()?.id == req.id) {
-                PanelApproval.deny()
-                if (dialog.isShowing) dialog.dismiss()
+            runCatching {
+                if (PanelApproval.current()?.id == req.id) {
+                    PanelApproval.deny()
+                    if (dialog.isShowing) dialog.dismiss()
+                }
             }
         }
     }
 
     private fun autosave() {
-        val pass = etPass.text.toString()
-        val ssid = etSsid.text.toString().trim()
-        val port = etPort.text.toString().toIntOrNull()
-        val httpPort = etHttpPort.text.toString().toIntOrNull()
-        val proxyType = PROXY_TYPE_LABELS.indexOf(etProxyType.text.toString()).let {
-            if (it < 0) 0 else it
-        }
-        val band = BAND_VALUES.getOrElse(BAND_LABELS.indexOf(etBand.text.toString())) { "2.4" }
-                val updateCheckIntervalHours = chosenUpdateIntervalHours()
+        try {
+            val pass = etPass.text.toString()
+            val ssid = etSsid.text.toString().trim()
+            val port = etPort.text.toString().toIntOrNull()
+            val httpPort = etHttpPort.text.toString().toIntOrNull()
+            val proxyType = PROXY_TYPE_LABELS.indexOf(etProxyType.text.toString()).let {
+                if (it < 0) 0 else it
+            }
+            val band = BAND_VALUES.getOrElse(BAND_LABELS.indexOf(etBand.text.toString())) { "2.4" }
+            val updateCheckIntervalHours = chosenUpdateIntervalHours()
         if (pass.length !in 8..63) {
             tvSaved.setTextColor(0xFFC62828.toInt())
             tvSaved.text = "Password must be 8-63 characters - not saved yet"
@@ -535,95 +620,141 @@ class MainActivity : AppCompatActivity() {
         tvSaved.setTextColor(0xFF2E7D32.toInt())
         val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
         tvSaved.text = "Saved to config.txt \u2713 $time"
+        } catch (e: Exception) {
+            Log.e(TAG, "autosave failed", e)
+            runCatching {
+                tvSaved.setTextColor(0xFFC62828.toInt())
+                tvSaved.text = "Save failed: ${e.message}"
+            }
+        }
     }
 
     private fun renderRunning(running: Boolean) {
-        btnToggle.text = if (running) "STOP PROXY" else "START PROXY"
+        runCatching {
+            btnToggle.text = if (running) "STOP PROXY" else "START PROXY"
+        }
     }
 
     private fun renderInfo(info: ApInfo) {
-        if (info.ssid.isEmpty()) {
-            tvInfo.text = "--"
-            tvPanelUrl.text = ""
-            return
+        runCatching {
+            if (info.ssid.isEmpty()) {
+                tvInfo.text = "--"
+                tvPanelUrl.text = ""
+                return
+            }
+            val socksPort = runCatching { etPort.text.ifEmpty { "1080" }.toString() }.getOrDefault("1080")
+            val httpPort = runCatching { etHttpPort.text.ifEmpty { "8282" }.toString() }.getOrDefault("8282")
+            val infoLines = mutableListOf(
+                "SSID:      ${info.ssid}",
+                "Password:  ${info.passphrase}",
+                "SOCKS5:    ${info.goIp}:$socksPort",
+                "HTTP:      ${info.goIp}:$httpPort"
+            )
+            if (info.panelPort > 0) infoLines.add("Panel:     http://${info.goIp}:${info.panelPort}/")
+            if (info.backupPanelPort > 0) infoLines.add("Backup:    http://${info.goIp}:${info.backupPanelPort}/ (use if proxy down)")
+            infoLines.add("Clients:   ${info.clients}")
+            tvInfo.text = infoLines.joinToString("\n")
+            tvPanelUrl.text = buildString {
+                if (info.panelPort > 0) append("Control panel runs on its own port:\nhttp://${info.goIp}:${info.panelPort}/\n")
+                if (info.backupPanelPort > 0) append("Backup panel (survives proxy crash):\nhttp://${info.goIp}:${info.backupPanelPort}/")
+            }.trim().ifEmpty { "" }
         }
-        val infoLines = mutableListOf(
-            "SSID:      ${info.ssid}",
-            "Password:  ${info.passphrase}",
-            "SOCKS5:    ${info.goIp}:${etPort.text.ifEmpty { "1080" }}",
-            "HTTP:      ${info.goIp}:${etHttpPort.text.ifEmpty { "8282" }}"
-        )
-        if (info.panelPort > 0) infoLines.add("Panel:     http://${info.goIp}:${info.panelPort}/")
-        if (info.backupPanelPort > 0) infoLines.add("Backup:    http://${info.goIp}:${info.backupPanelPort}/ (use if proxy down)")
-        infoLines.add("Clients:   ${info.clients}")
-        tvInfo.text = infoLines.joinToString("\n")
-        tvPanelUrl.text = buildString {
-            if (info.panelPort > 0) append("Control panel runs on its own port:\nhttp://${info.goIp}:${info.panelPort}/\n")
-            if (info.backupPanelPort > 0) append("Backup panel (survives proxy crash):\nhttp://${info.goIp}:${info.backupPanelPort}/")
-        }.trim().ifEmpty { "" }
     }
 
     private fun startSelectedProxy() {
-        val pass = etPass.text.toString()
-        Log.i(TAG, "START clicked - passLen=${pass.length}")
-        if (pass.length < 8 || pass.length > 63) {
-            Log.w(TAG, "password invalid -> refusing to start")
-            tvStatus.text = "ERROR: set a WiFi password (8-63 chars) first"
-            Toast.makeText(this, "Set a WiFi password (8-63 chars) before starting", Toast.LENGTH_LONG).show()
-            return
+        try {
+            val pass = etPass.text.toString()
+            Log.i(TAG, "START clicked - passLen=${pass.length}")
+            if (pass.length < 8 || pass.length > 63) {
+                Log.w(TAG, "password invalid -> refusing to start")
+                tvStatus.text = "ERROR: set a WiFi password (8-63 chars) first"
+                runCatching {
+                    Toast.makeText(this, "Set a WiFi password (8-63 chars) before starting", Toast.LENGTH_LONG).show()
+                }
+                return
+            }
+            val idx = PROXY_TYPE_LABELS.indexOf(etProxyType.text.toString()).let { if (it < 0) 0 else it }
+            runCatching { etProxyType.setText(PROXY_TYPE_LABELS[idx], false) }
+            runCatching { autosave() }
+            checkPermissionsAndStart()
+        } catch (e: Exception) {
+            Log.e(TAG, "start selected proxy failed", e)
+            runCatching {
+                tvStatus.text = "ERROR: couldn't start (${e.message})"
+                Toast.makeText(this, "Couldn't start proxy: ${e.message}", Toast.LENGTH_LONG).show()
+            }
         }
-        val idx = PROXY_TYPE_LABELS.indexOf(etProxyType.text.toString()).let { if (it < 0) 0 else it }
-        etProxyType.setText(PROXY_TYPE_LABELS[idx], false)
-        autosave()
-        checkPermissionsAndStart()
     }
 
     private fun checkPermissionsAndStart() {
-        val needed = mutableListOf<String>()
-        needed.add(Manifest.permission.ACCESS_FINE_LOCATION)
-        needed.add(Manifest.permission.ACCESS_COARSE_LOCATION)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            needed.add(Manifest.permission.NEARBY_WIFI_DEVICES)
-        }
-        val missing = needed.filter {
-            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-        }
-        Log.i(TAG, "permissions needed=$needed missing=$missing")
-        if (missing.isEmpty()) {
-            startProxy()
-        } else {
-            permLauncher.launch(missing.toTypedArray())
+        try {
+            val needed = mutableListOf<String>()
+            needed.add(Manifest.permission.ACCESS_FINE_LOCATION)
+            needed.add(Manifest.permission.ACCESS_COARSE_LOCATION)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                needed.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+            }
+            val missing = needed.filter {
+                runCatching {
+                    ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+                }.getOrDefault(true)
+            }
+            Log.i(TAG, "permissions needed=$needed missing=$missing")
+            if (missing.isEmpty()) {
+                startProxy()
+            } else {
+                try {
+                    permLauncher.launch(missing.toTypedArray())
+                } catch (e: Exception) {
+                    Log.e(TAG, "permission request failed, starting anyway", e)
+                    startProxy()
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "permission check failed", e)
+            runCatching { startProxy() }
         }
     }
 
     private fun startProxy() {
-        val intent = Intent(this, ProxyService::class.java).setAction(ProxyService.ACTION_START)
-        ContextCompat.startForegroundService(this, intent)
-        AppState.running.value = true
+        try {
+            val intent = Intent(this, ProxyService::class.java).setAction(ProxyService.ACTION_START)
+            ContextCompat.startForegroundService(this, intent)
+            AppState.running.value = true
+        } catch (e: Exception) {
+            Log.e(TAG, "startForegroundService failed", e)
+            AppState.running.value = false
+            runCatching {
+                tvStatus.text = "ERROR: couldn't start service (${e.message})"
+                Toast.makeText(this, "Couldn't start proxy service: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     private fun checkForUpdate() {
         if (updateInProgress) return
         updateInProgress = true
-        btnCheckUpdate.isEnabled = false
-        tvUpdateStatus.text = "Checking for updates..."
+        runCatching { btnCheckUpdate.isEnabled = false }
+        runCatching { tvUpdateStatus.text = "Checking for updates..." }
         lifecycleScope.launch {
             try {
-                val latest = withContext(Dispatchers.IO) { UpdateChecker.fetchLatestTag() }
+                val latest = withContext(Dispatchers.IO) { runCatching { UpdateChecker.fetchLatestTag() }.getOrNull() }
                 when {
                     latest == null -> {
                         tvUpdateStatus.text = "Couldn't reach the update server. Try again later."
                     }
-                    !UpdateChecker.isNewer(latest, BuildConfig.VERSION_NAME) -> {
+                    runCatching { !UpdateChecker.isNewer(latest, BuildConfig.VERSION_NAME) }.getOrDefault(false) -> {
                         tvUpdateStatus.text = "You're on the latest version (${BuildConfig.VERSION_NAME})."
                         AppState.updateAvailable.value = null
                     }
                     else -> {
                         tvUpdateStatus.text = "Update available: $latest - downloading..."
                         val file = withContext(Dispatchers.IO) {
-                            UpdateChecker.downloadApk(this@MainActivity, latest) { pct ->
-                                runOnUiThread { tvUpdateStatus.text = "Downloading $latest... $pct%" }
-                            }
+                            runCatching {
+                                UpdateChecker.downloadApk(this@MainActivity, latest) { pct ->
+                                    runOnUiThread { runCatching { tvUpdateStatus.text = "Downloading $latest... $pct%" } }
+                                }
+                            }.getOrNull()
                         }
                         if (file == null) {
                             tvUpdateStatus.text = "Download failed. Check your connection and try again."
@@ -635,33 +766,42 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             } catch (e: Exception) {
-                tvUpdateStatus.text = "Update check failed: ${e.message}"
+                runCatching { tvUpdateStatus.text = "Update check failed: ${e.message}" }
             } finally {
                 updateInProgress = false
-                btnCheckUpdate.isEnabled = true
+                runCatching { btnCheckUpdate.isEnabled = true }
             }
         }
     }
 
     private fun launchInstaller(apk: File) {
-        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", apk)
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, "application/vnd.android.package-archive")
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
         try {
+            if (!apk.exists()) {
+                tvUpdateStatus.text = "Update file is missing - please check again."
+                return
+            }
+            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", apk)
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
             startActivity(intent)
         } catch (e: Exception) {
-            tvUpdateStatus.text = "Couldn't open installer: ${e.message}"
+            Log.e(TAG, "launch installer failed", e)
+            runCatching { tvUpdateStatus.text = "Couldn't open installer: ${e.message}" }
         }
     }
 
     private fun requestBatteryExemption() {
-        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        if (pm.isIgnoringBatteryOptimizations(packageName)) {
-            Toast.makeText(this, "Already exempt from battery optimization", Toast.LENGTH_SHORT).show()
-            return
+        try {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (pm.isIgnoringBatteryOptimizations(packageName)) {
+                Toast.makeText(this, "Already exempt from battery optimization", Toast.LENGTH_SHORT).show()
+                return
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "battery check failed", e)
         }
         try {
             startActivity(
@@ -671,7 +811,15 @@ class MainActivity : AppCompatActivity() {
                 )
             )
         } catch (e: Exception) {
-            startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            Log.e(TAG, "battery exemption intent failed", e)
+            try {
+                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            } catch (e2: Exception) {
+                Log.e(TAG, "battery settings fallback failed", e2)
+                runCatching {
+                    Toast.makeText(this, "Couldn't open battery settings on this device", Toast.LENGTH_LONG).show()
+                }
+            }
         }
     }
 
@@ -679,24 +827,34 @@ class MainActivity : AppCompatActivity() {
         try {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/SynacNipo/Sacram/wiki")))
         } catch (e: Exception) {
-            Toast.makeText(this, "No browser found", Toast.LENGTH_LONG).show()
+            Log.e(TAG, "open wiki failed", e)
+            runCatching {
+                Toast.makeText(this, "No browser found", Toast.LENGTH_LONG).show()
+            }
         }
     }
 
     private fun openAutostartSettings() {
-        val intents = listOf(
-            Intent().setClassName("com.hihonor.systemmanager", "com.hihonor.systemmanager.startupmgr.ui.StartupNormalAppListActivity"),
-            Intent().setClassName("com.huawei.systemmanager", "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"),
-            Intent().setClassName("com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity"),
-            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
-        )
-        for (i in intents) {
-            try {
-                startActivity(i)
-                return
-            } catch (_: Exception) {
+        try {
+            val intents = listOf(
+                Intent().setClassName("com.hihonor.systemmanager", "com.hihonor.systemmanager.startupmgr.ui.StartupNormalAppListActivity"),
+                Intent().setClassName("com.huawei.systemmanager", "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"),
+                Intent().setClassName("com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity"),
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
+            )
+            for (i in intents) {
+                try {
+                    startActivity(i)
+                    return
+                } catch (_: Exception) {
+                }
+            }
+            Toast.makeText(this, "Open Settings > Apps > Sacram and enable Autostart", Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            Log.e(TAG, "open autostart failed", e)
+            runCatching {
+                Toast.makeText(this, "Couldn't open settings on this device", Toast.LENGTH_LONG).show()
             }
         }
-        Toast.makeText(this, "Open Settings > Apps > Sacram and enable Autostart", Toast.LENGTH_LONG).show()
     }
 }

@@ -91,7 +91,12 @@ class Socks4Server(
             }
         }
         netCallback = cb
-        cm.requestNetwork(request, cb)
+        try {
+            cm.requestNetwork(request, cb)
+        } catch (e: Exception) {
+            onLog("WARNING [SOCKS4]: cellular request failed (${e.message}) - using default route")
+            netCallback = null
+        }
         scope.launch {
             kotlinx.coroutines.delay(3000)
             if (cellularNetwork == null) {

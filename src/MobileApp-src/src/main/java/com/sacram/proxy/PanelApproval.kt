@@ -42,32 +42,40 @@ object PanelApproval {
     fun current(): Request? = _pending.value
 
     fun approve(context: Context): Boolean {
-        val r = _pending.value ?: return false
-        if (r.fields["action"] == "restart") {
-            onRestart?.invoke()
+        return try {
+            val r = _pending.value ?: return false
+            if (r.fields["action"] == "restart") {
+                runCatching { onRestart?.invoke() }
+                _pending.value = null
+                return true
+            }
+            applyFields(context, r.fields)
             _pending.value = null
-            return true
+            true
+        } catch (_: Exception) {
+            runCatching { _pending.value = null }
+            false
         }
-        applyFields(context, r.fields)
-        _pending.value = null
-        return true
     }
 
     fun deny() {
-        _pending.value = null
+        runCatching { _pending.value = null }
     }
 
     fun applyFields(context: Context, fields: Map<String, String>) {
-        val prev = ConfigManager.load(context)
-        val newCfg = prev.copy(
-            keepaliveUrl = fields["keepalive_url"]?.trim()?.ifBlank { prev.keepaliveUrl }
-                ?: prev.keepaliveUrl,
-            keepaliveIntervalMs = (fields["keepalive_interval"]?.toLongOrNull()?.coerceAtLeast(15)
-                ?: (prev.keepaliveIntervalMs / 1000)) * 1000L,
-            panelEnabled = fields["panel_enabled"] == "on",
-            band = fields["band"]?.trim()?.takeIf { it in setOf("2.4", "5", "auto") }
-                ?: prev.band
-        )
-        ConfigManager.save(context, newCfg)
+        try {
+            val prev = ConfigManager.load(context)
+            val newCfg = prev.copy(
+                keepaliveUrl = fields["keepalive_url"]?.trim()?.ifBlank { prev.keepaliveUrl }
+                    ?: prev.keepaliveUrl,
+                keepaliveIntervalMs = (fields["keepalive_interval"]?.toLongOrNull()?.coerceAtLeast(15)
+                    ?: (prev.keepaliveIntervalMs / 1000)) * 1000L,
+                panelEnabled = fields["panel_enabled"] == "on",
+                band = fields["band"]?.trim()?.takeIf { it in setOf("2.4", "5", "auto") }
+                    ?: prev.band
+            )
+            ConfigManager.save(context, newCfg)
+        } catch (_: Exception) {
+        }
     }
 }

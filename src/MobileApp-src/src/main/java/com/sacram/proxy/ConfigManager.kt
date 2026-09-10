@@ -82,9 +82,13 @@ object ConfigManager {
     }
 
     fun ensureConfig(context: Context): AppConfig {
-        val cfg = load(context)
-        mirrorToExternal(context)
-        return cfg
+        return try {
+            val cfg = load(context)
+            mirrorToExternal(context)
+            cfg
+        } catch (_: Exception) {
+            defaultConfig
+        }
     }
 
     fun mirrorToExternal(context: Context) {
@@ -106,62 +110,79 @@ object ConfigManager {
      */
     private fun globalConfigUri(context: Context): Uri? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
-        val resolver = context.contentResolver
-        val collection = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-        val relative = Environment.DIRECTORY_DOCUMENTS + "/Sacram/"
-        val projection = arrayOf(MediaStore.Files.FileColumns._ID)
-        val selection =
-            "${MediaStore.Files.FileColumns.RELATIVE_PATH} = ? AND " +
-                "${MediaStore.Files.FileColumns.DISPLAY_NAME} = ?"
-        val args = arrayOf(relative, FILE_NAME)
-        resolver.query(collection, projection, selection, args, null)?.use { c ->
-            if (c.moveToFirst()) {
-                val id = c.getLong(c.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID))
-                return ContentUris.withAppendedId(collection, id)
+        return try {
+            val resolver = context.contentResolver
+            val collection = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            val relative = Environment.DIRECTORY_DOCUMENTS + "/Sacram/"
+            val projection = arrayOf(MediaStore.Files.FileColumns._ID)
+            val selection =
+                "${MediaStore.Files.FileColumns.RELATIVE_PATH} = ? AND " +
+                    "${MediaStore.Files.FileColumns.DISPLAY_NAME} = ?"
+            val args = arrayOf(relative, FILE_NAME)
+            resolver.query(collection, projection, selection, args, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    val id = c.getLong(c.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID))
+                    return ContentUris.withAppendedId(collection, id)
+                }
             }
+            val values = ContentValues().apply {
+                put(MediaStore.Files.FileColumns.DISPLAY_NAME, FILE_NAME)
+                put(MediaStore.Files.FileColumns.MIME_TYPE, "text/plain")
+                put(MediaStore.Files.FileColumns.RELATIVE_PATH, relative)
+            }
+            resolver.insert(collection, values)
+        } catch (_: Exception) {
+            null
         }
-        val values = ContentValues().apply {
-            put(MediaStore.Files.FileColumns.DISPLAY_NAME, FILE_NAME)
-            put(MediaStore.Files.FileColumns.MIME_TYPE, "text/plain")
-            put(MediaStore.Files.FileColumns.RELATIVE_PATH, relative)
-        }
-        return resolver.insert(collection, values)
     }
 
     private fun readGlobalConfig(context: Context): String? {
-        val uri = globalConfigUri(context) ?: return null
-        return runCatching {
-            context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-        }.getOrNull()
+        return try {
+            val uri = globalConfigUri(context) ?: return null
+            runCatching {
+                context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+            }.getOrNull()
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun writeGlobalConfig(context: Context, text: String) {
-        val uri = globalConfigUri(context) ?: return
-        runCatching {
-            context.contentResolver.openFileDescriptor(uri, "wt")?.use { pfd ->
-                FileOutputStream(pfd.fileDescriptor).use { it.write(text.toByteArray()) }
+        try {
+            val uri = globalConfigUri(context) ?: return
+            runCatching {
+                context.contentResolver.openFileDescriptor(uri, "wt")?.use { pfd ->
+                    FileOutputStream(pfd.fileDescriptor).use { it.write(text.toByteArray()) }
+                }
             }
+        } catch (_: Exception) {
         }
     }
 
     fun load(context: Context): AppConfig {
-        val internal = internalConfigFile(context)
-        val external = externalConfigFile(context)
-        val source = when {
-            internal.exists() -> internal
-            external.exists() -> external
-            else -> {
-                val g = readGlobalConfig(context)
-                if (g != null) {
-                    internal.writeText(g)
-                    mirrorToExternal(context)
-                    return parse(internal)
+        return try {
+            val internal = internalConfigFile(context)
+            val external = externalConfigFile(context)
+            val source = when {
+                internal.exists() -> internal
+                external.exists() -> external
+                else -> {
+                    val g = readGlobalConfig(context)
+                    if (g != null) {
+                        runCatching {
+                            internal.writeText(g)
+                            mirrorToExternal(context)
+                        }
+                        return parse(internal)
+                    }
+                    runCatching { save(context, defaultConfig) }
+                    return defaultConfig
                 }
-                save(context, defaultConfig)
-                return defaultConfig
             }
+            parse(source)
+        } catch (_: Exception) {
+            defaultConfig
         }
-        return parse(source)
     }
 
     fun parse(file: File): AppConfig {
@@ -209,8 +230,9 @@ object ConfigManager {
     }
 
     fun save(context: Context, config: AppConfig) {
-        val file = internalConfigFile(context)
-        val lines = listOf(
+        try {
+            val file = internalConfigFile(context)
+            val lines = listOf(
             "# Sacram config",
             "# Edit and restart the proxy to apply.",
             "ssid=${config.ssid}",
@@ -236,5 +258,7 @@ object ConfigManager {
         file.writeText(text)
         mirrorToExternal(context)
         writeGlobalConfig(context, text)
+        } catch (_: Exception) {
+        }
     }
 }

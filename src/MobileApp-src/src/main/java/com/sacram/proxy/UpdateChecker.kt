@@ -34,75 +34,94 @@ object UpdateChecker {
      * window to elapse.
      */
     fun scheduleCheck(context: Context, intervalHours: Int) {
-        if (intervalHours <= 0) {
-            WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME)
-            return
+        try {
+            if (intervalHours <= 0) {
+                WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME)
+                return
+            }
+            val constraints = Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED)
+                .build()
+            val request = PeriodicWorkRequestBuilder<UpdateWorker>(intervalHours.toLong().coerceAtLeast(1), TimeUnit.HOURS)
+                .setConstraints(constraints)
+                .build()
+            WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+                WORK_NAME,
+                ExistingPeriodicWorkPolicy.REPLACE,
+                request
+            )
+        } catch (_: Exception) {
         }
-        val constraints = Constraints.Builder()
-            .setRequiredNetworkType(NetworkType.CONNECTED)
-            .build()
-        val request = PeriodicWorkRequestBuilder<UpdateWorker>(intervalHours.toLong().coerceAtLeast(1), TimeUnit.HOURS)
-            .setConstraints(constraints)
-            .build()
-        WorkManager.getInstance(context).enqueueUniquePeriodicWork(
-            WORK_NAME,
-            ExistingPeriodicWorkPolicy.REPLACE,
-            request
-        )
     }
 
     fun fetchLatestTag(): String? {
-        val conn = URL(REPO_API).openConnection() as HttpURLConnection
-        conn.requestMethod = "GET"
-        conn.setRequestProperty("User-Agent", "Sacram-App")
-        conn.connectTimeout = 10000
-        conn.readTimeout = 10000
         return try {
-            if (conn.responseCode != 200) return null
-            val body = conn.inputStream.bufferedReader().use { it.readText() }
-            val m = Regex(""""tag_name"\s*:\s*"([^"]+)"""").find(body) ?: return null
-            m.groupValues[1]
-        } finally {
-            conn.disconnect()
+            val conn = URL(REPO_API).openConnection() as HttpURLConnection
+            conn.requestMethod = "GET"
+            conn.setRequestProperty("User-Agent", "Sacram-App")
+            conn.connectTimeout = 10000
+            conn.readTimeout = 10000
+            try {
+                if (conn.responseCode != 200) return null
+                val body = conn.inputStream.bufferedReader().use { it.readText() }
+                val m = Regex(""""tag_name"\s*:\s*"([^"]+)"""").find(body) ?: return null
+                m.groupValues[1]
+            } finally {
+                runCatching { conn.disconnect() }
+            }
+        } catch (_: Exception) {
+            null
         }
     }
 
     /** Downloads the release APK for [tag], overwriting any previous download. */
     fun downloadApk(context: Context, tag: String, onProgress: (Int) -> Unit = {}): File? {
-        val dir = File(context.getExternalFilesDir(null), "updates")
-        if (!dir.exists()) dir.mkdirs()
-        val file = File(dir, "sacram.apk")
-        val conn = URL("https://github.com/SynacNipo/Sacram/releases/download/$tag/sacram.apk")
-            .openConnection() as HttpURLConnection
-        conn.requestMethod = "GET"
-        conn.setRequestProperty("User-Agent", "Sacram-App")
-        conn.connectTimeout = 15000
-        conn.readTimeout = 60000
         return try {
-            if (conn.responseCode !in 200..299) return null
-            val total = conn.contentLengthLong
-            conn.inputStream.use { input ->
-                FileOutputStream(file).use { out ->
-                    val buffer = ByteArray(8192)
-                    var read: Int
-                    var downloaded = 0L
-                    while (input.read(buffer).also { read = it } != -1) {
-                        out.write(buffer, 0, read)
-                        downloaded += read
-                        if (total > 0) onProgress((downloaded * 100 / total).toInt())
+            val base = context.getExternalFilesDir(null) ?: context.filesDir
+            val dir = File(base, "updates")
+            if (!dir.exists()) dir.mkdirs()
+            val file = File(dir, "sacram.apk")
+            val conn = URL("https://github.com/SynacNipo/Sacram/releases/download/$tag/sacram.apk")
+                .openConnection() as HttpURLConnection
+            conn.requestMethod = "GET"
+            conn.setRequestProperty("User-Agent", "Sacram-App")
+            conn.connectTimeout = 15000
+            conn.readTimeout = 60000
+            try {
+                if (conn.responseCode !in 200..299) return null
+                val total = conn.contentLengthLong
+                conn.inputStream.use { input ->
+                    FileOutputStream(file).use { out ->
+                        val buffer = ByteArray(8192)
+                        var read: Int
+                        var downloaded = 0L
+                        while (input.read(buffer).also { read = it } != -1) {
+                            out.write(buffer, 0, read)
+                            downloaded += read
+                            if (total > 0) runCatching { onProgress((downloaded * 100 / total).toInt()) }
+                        }
                     }
                 }
+                file
+            } catch (_: Exception) {
+                runCatching { file.delete() }
+                null
+            } finally {
+                runCatching { conn.disconnect() }
             }
-            file
         } catch (_: Exception) {
             null
-        } finally {
-            conn.disconnect()
         }
     }
 
-    fun downloadedApkFile(context: Context): File =
-        File(File(context.getExternalFilesDir(null), "updates"), "sacram.apk")
+    fun downloadedApkFile(context: Context): File {
+        return try {
+            val base = context.getExternalFilesDir(null) ?: context.filesDir
+            File(File(base, "updates"), "sacram.apk")
+        } catch (_: Exception) {
+            File(context.filesDir, "sacram.apk")
+        }
+    }
 
     private fun parseVersion(tag: String): Pair<Int, Int>? {
         val m = Regex("""v?(\d+)\.(\d+)""").find(tag) ?: return null

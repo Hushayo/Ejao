@@ -90,34 +90,41 @@ class ProxyService : Service() {
     override fun onCreate() {
         super.onCreate()
         Log.i(TAG, "onCreate")
-        createChannel()
+        runCatching { createChannel() }
         try {
             startForegroundCompat()
         } catch (e: Exception) {
             Log.e(TAG, "startForeground failed", e)
         }
-        acquireLocks()
-        startFileWatcher()
-        PanelApproval.onRestart = { restartProxy() }
-        UpdateChecker.scheduleCheck(this, ConfigManager.ensureConfig(this).updateCheckIntervalHours)
+        runCatching { acquireLocks() }
+        runCatching { startFileWatcher() }
+        runCatching { PanelApproval.onRestart = { restartProxy() } }
+        runCatching {
+            UpdateChecker.scheduleCheck(this, ConfigManager.ensureConfig(this).updateCheckIntervalHours)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            ProxyState.setShouldRun(this, false)
-            cancelWatchdog(this)
-            stopSelf()
+        try {
+            if (intent?.action == ACTION_STOP) {
+                runCatching { ProxyState.setShouldRun(this, false) }
+                runCatching { cancelWatchdog(this) }
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            if (started.compareAndSet(false, true)) {
+                startedAt = System.currentTimeMillis()
+                AppState.serviceStartedAt = startedAt
+                runCatching { ProxyState.setShouldRun(this, true) }
+                runCatching { scheduleWatchdog(this) }
+                keepAliveJob = runCatching { KeepAlive.launch(scope, this) }.getOrNull()
+                scope.launch { runPipeline() }
+            }
+            return START_STICKY
+        } catch (e: Exception) {
+            Log.e(TAG, "onStartCommand failed", e)
             return START_NOT_STICKY
         }
-        if (started.compareAndSet(false, true)) {
-            startedAt = System.currentTimeMillis()
-            AppState.serviceStartedAt = startedAt
-            ProxyState.setShouldRun(this, true)
-            scheduleWatchdog(this)
-            keepAliveJob = KeepAlive.launch(scope, this)
-            scope.launch { runPipeline() }
-        }
-        return START_STICKY
     }
 
     private suspend fun runPipeline() {
@@ -436,20 +443,24 @@ class ProxyService : Service() {
     }
 
     private fun startFileWatcher() {
-        val watched = ConfigManager.externalConfigFile(this)
-        if (!watched.exists()) ConfigManager.mirrorToExternal(this)
-        fileObserver = object : FileObserver(watched.absolutePath) {
-            override fun onEvent(event: Int, path: String?) {
-                if (event and FileObserver.CLOSE_WRITE != 0 && started.get()) {
-                    restartJob?.cancel()
-                    restartJob = scope.launch {
-                        delay(1200)
-                        ConfigManager.mirrorToExternal(this@ProxyService)
-                        restartProxy()
+        try {
+            val watched = ConfigManager.externalConfigFile(this)
+            if (!watched.exists()) runCatching { ConfigManager.mirrorToExternal(this) }
+            fileObserver = object : FileObserver(watched.absolutePath) {
+                override fun onEvent(event: Int, path: String?) {
+                    if (event and FileObserver.CLOSE_WRITE != 0 && started.get()) {
+                        restartJob?.cancel()
+                        restartJob = scope.launch {
+                            delay(1200)
+                            runCatching { ConfigManager.mirrorToExternal(this@ProxyService) }
+                            runCatching { restartProxy() }
+                        }
                     }
                 }
-            }
-        }.apply { startWatching() }
+            }.apply { runCatching { startWatching() } }
+        } catch (e: Exception) {
+            Log.w(TAG, "file watcher unavailable: ${e.message}")
+        }
     }
 
     /**
@@ -605,78 +616,109 @@ class ProxyService : Service() {
      * same SSID/passphrase so any reconnecting client just sees the AP come back.
      */
     private suspend fun recreateGroup(p2p: WifiDirectManager, config: AppConfig) {
-        if (!started.get()) return
-        p2p.removeExistingGroup {
-            val band = if (config.disableBandSelector) "2.4" else config.band
-            p2p.createGroup(config.ssid, config.password, band) { ok, msg ->
-                Log.i(TAG, "recreateGroup createGroup ok=$ok msg=$msg band=$band")
+        try {
+            if (!started.get()) return
+            try {
+                p2p.removeExistingGroup {
+                    runCatching {
+                        val band = if (config.disableBandSelector) "2.4" else config.band
+                        p2p.createGroup(config.ssid, config.password, band) { ok, msg ->
+                            Log.i(TAG, "recreateGroup createGroup ok=$ok msg=$msg band=$band")
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "recreateGroup remove/create failed: ${e.message}")
+                return
             }
-        }
         var formed = false
         for (i in 0 until 30) {
             delay(500)
             if (!started.get()) return
             var got = false
-            p2p.requestGroupInfo { g -> got = true; if (g != null) formed = true }
+            try {
+                p2p.requestGroupInfo { g -> got = true; if (g != null) formed = true }
+            } catch (e: Exception) {
+                Log.w(TAG, "recreateGroup poll failed: ${e.message}")
+                return
+            }
             var loop = 0
             while (!got && loop < 20) { delay(50); loop++ }
             if (formed) break
         }
         if (formed) {
-            p2p.requestGroupInfo { g ->
-                if (g != null) {
-                    val goIp = p2p.getGroupOwnerIp()
-                    val hybrid = config.isHybrid()
-                    val httpMode = config.effectiveMode() == "http"
-                    AppState.apInfo.value = AppState.apInfo.value.copy(
-                        ssid = g.networkName,
-                        passphrase = g.passphrase,
-                        goIp = goIp
-                    )
-                    updateNotification(
-                        g.networkName, g.passphrase, goIp,
-                        if (httpMode) config.httpPort else config.port,
-                        if (hybrid) config.httpPort else 0,
-                        hybrid,
-                        config.panelPort,
-                        backupPanelPortActual
-                    )
-                    Log.i(TAG, "WiFi Direct group recreated (kept alive) ssid=${g.networkName} goIp=$goIp")
+            try {
+                p2p.requestGroupInfo { g ->
+                    runCatching {
+                        if (g != null) {
+                            val goIp = p2p.getGroupOwnerIp()
+                            val hybrid = config.isHybrid()
+                            val httpMode = config.effectiveMode() == "http"
+                            AppState.apInfo.value = AppState.apInfo.value.copy(
+                                ssid = g.networkName,
+                                passphrase = g.passphrase,
+                                goIp = goIp
+                            )
+                            updateNotification(
+                                g.networkName, g.passphrase, goIp,
+                                if (httpMode) config.httpPort else config.port,
+                                if (hybrid) config.httpPort else 0,
+                                hybrid,
+                                config.panelPort,
+                                backupPanelPortActual
+                            )
+                            Log.i(TAG, "WiFi Direct group recreated (kept alive) ssid=${g.networkName} goIp=$goIp")
+                        }
+                    }
                 }
+            } catch (e: Exception) {
+                Log.w(TAG, "recreateGroup info failed: ${e.message}")
             }
         } else {
             Log.w(TAG, "recreateGroup failed to reform group in time")
+        }
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            Log.w(TAG, "recreateGroup failed: ${e.message}")
         }
     }
 
     private fun restartProxy() {
         if (!started.get()) return
         scope.launch {
-            Log.i(TAG, "proxy_restart reason=config_changed")
-            updateStatus("Config changed, restarting...")
-            // NOTE: backupPanel is deliberately NOT stopped here - it stays up
-            // over WiFi Direct so there is always a restart path even if the
-            // new pipeline fails to bind the main proxy ports.
-            runCatching { socks?.stop() }
-            runCatching { socks4?.stop() }
-            runCatching { http?.stop() }
-            runCatching { panel?.stop() }
-            socks = null
-            socks4 = null
-            http = null
-            panel = null
-            proxyDownNotified = false
-            val p2p = WifiDirectManager(this@ProxyService)
-            p2p.removeGroup { }
-            delay(1500)
-            runPipeline()
+            try {
+                Log.i(TAG, "proxy_restart reason=config_changed")
+                updateStatus("Config changed, restarting...")
+                // NOTE: backupPanel is deliberately NOT stopped here - it stays up
+                // over WiFi Direct so there is always a restart path even if the
+                // new pipeline fails to bind the main proxy ports.
+                runCatching { socks?.stop() }
+                runCatching { socks4?.stop() }
+                runCatching { http?.stop() }
+                runCatching { panel?.stop() }
+                socks = null
+                socks4 = null
+                http = null
+                panel = null
+                proxyDownNotified = false
+                runCatching {
+                    val p2p = WifiDirectManager(this@ProxyService)
+                    p2p.removeGroup { }
+                }
+                delay(1500)
+                runPipeline()
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) return@launch
+                Log.e(TAG, "restart failed", e)
+                runCatching { updateStatus("ERROR: restart failed (${e.message})") }
+            }
         }
     }
 
     override fun onDestroy() {
         started.set(false)
-        ProxyState.setShouldRun(this, false)
-        cancelWatchdog(this)
+        runCatching { ProxyState.setShouldRun(this, false) }
+        runCatching { cancelWatchdog(this) }
         Log.i(TAG, "proxy_stopped")
         restartJob?.cancel()
         keepAliveJob?.cancel()
@@ -704,15 +746,23 @@ class ProxyService : Service() {
     }
 
     private fun acquireLocks() {
-        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Sacram:proxy").apply {
-            setReferenceCounted(false)
-            acquire(10 * 60 * 60 * 1000L)
-        }
-        val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-        wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Sacram:wifi").apply {
-            setReferenceCounted(false)
-            acquire()
+        try {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = runCatching {
+                pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Sacram:proxy").apply {
+                    setReferenceCounted(false)
+                    acquire(10 * 60 * 60 * 1000L)
+                }
+            }.getOrNull()
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            wifiLock = runCatching {
+                wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Sacram:wifi").apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+            }.getOrNull()
+        } catch (e: Exception) {
+            Log.w(TAG, "locks unavailable: ${e.message}")
         }
     }
 
