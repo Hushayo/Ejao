@@ -315,8 +315,33 @@ class ProxyService : Service() {
             var groupRecreateGuard = false
             var groupRecreateCount = 0
             val groupRecreateMax = 21
+            var lastRx = readP2pBytes()?.first ?: -1L
+            var lastTx = readP2pBytes()?.second ?: -1L
+            var lastNetT = System.currentTimeMillis()
             while (currentCoroutineContext().isActive && started.get()) {
                 delay(5000)
+                // Hotspot interface throughput: delta of rx/tx byte counters
+                // over the poll interval. Resets/wraps (new < old) yield 0.
+                try {
+                    val now = System.currentTimeMillis()
+                    val sample = readP2pBytes()
+                    if (sample != null && lastRx >= 0 && lastTx >= 0) {
+                        val dt = (now - lastNetT).coerceAtLeast(1) / 1000.0
+                        val dRx = (sample.first - lastRx).coerceAtLeast(0)
+                        val dTx = (sample.second - lastTx).coerceAtLeast(0)
+                        AppState.netDownBps = (dRx * 8 / dt).toLong()
+                        AppState.netUpBps = (dTx * 8 / dt).toLong()
+                    } else if (sample == null) {
+                        AppState.netDownBps = 0L
+                        AppState.netUpBps = 0L
+                    }
+                    if (sample != null) {
+                        lastRx = sample.first
+                        lastTx = sample.second
+                        lastNetT = now
+                    }
+                } catch (_: Exception) {
+                }
                 // Self-heal the backup dashboard: if it died, bring it back so
                 // there is always a restart path over WiFi Direct.
                 if ((backupPanel == null || backupPanel?.isRunning() != true) && started.get()) {
@@ -372,10 +397,26 @@ class ProxyService : Service() {
                             }
                         }
                         AppState.apInfo.value = AppState.apInfo.value.copy(clients = 0)
+                        AppState.lanClients.value = emptyList()
+                        ClientUsage.reset()
                         AppState.status.value = "RUNNING - AP re-forming..."
                     } else {
                         val n = g.clientList?.size ?: 0
                         AppState.apInfo.value = AppState.apInfo.value.copy(clients = n)
+                        try {
+                            val usage = ClientUsage.snapshotMb()
+                            AppState.lanClients.value = (g.clientList ?: emptyList()).map { d ->
+                                val mac = d?.deviceAddress ?: ""
+                                val ip = arpLookup(mac)
+                                val rawName = d?.deviceName?.trim() ?: ""
+                                LanClient(
+                                    name = rawName.ifEmpty { "Unknown device" },
+                                    ip = ip.ifEmpty { mac.ifEmpty { "?" } },
+                                    mb = usage[ip] ?: 0.0
+                                )
+                            }.sortedByDescending { it.mb }
+                        } catch (_: Exception) {
+                        }
                         if (proxyDownNotified && backupPanelPortActual > 0) {
                             val bIp = AppState.apInfo.value.goIp
                             AppState.status.value = "PROXY DOWN - WiFi Direct still up (clients: $n). Restart: http://$bIp:$backupPanelPortActual/"
@@ -512,6 +553,49 @@ class ProxyService : Service() {
             }
         } catch (_: Exception) {
             false
+        }
+    }
+
+    /**
+     * Reads (rxBytes, txBytes) for the Wi-Fi Direct group interface from
+     * sysfs (world-readable, no root). Returns null when no P2P interface
+     * exists yet or counters are unreadable.
+     */
+    private fun readP2pBytes(): Pair<Long, Long>? {
+        for (iface in listOf("p2p0", "p2p-wlan0-0", "p2p-wlan0-1", "p2p-wlan0-2")) {
+            try {
+                val rx = java.io.File("/sys/class/net/$iface/statistics/rx_bytes").takeIf { it.exists() }
+                    ?.readText()?.trim()?.toLongOrNull() ?: continue
+                val tx = java.io.File("/sys/class/net/$iface/statistics/tx_bytes")
+                    .readText().trim().toLongOrNull() ?: continue
+                return rx to tx
+            } catch (_: Exception) {
+            }
+        }
+        return null
+    }
+
+    /**
+     * Resolves a P2P peer MAC to its LAN IP via /proc/net/arp
+     * (world-readable). Matches only entries on a P2P interface with the
+     * complete flag (0x2). Returns "" when unknown.
+     */
+    private fun arpLookup(mac: String): String {
+        val want = mac.lowercase()
+        if (want.isEmpty()) return ""
+        return try {
+            java.io.File("/proc/net/arp").readLines().asSequence()
+                .drop(1)
+                .mapNotNull { line ->
+                    val p = line.trim().split(Regex("\\s+"))
+                    if (p.size < 6) null
+                    else Triple(p[0], p[2], p[3].lowercase() to p[5])
+                }
+                .firstOrNull { (_, flags, hwDev) ->
+                    flags == "0x2" && hwDev.second.startsWith("p2p") && hwDev.first == want
+                }?.first ?: ""
+        } catch (_: Exception) {
+            ""
         }
     }
 

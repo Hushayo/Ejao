@@ -206,10 +206,13 @@ class Socks5Server(
     }
 
     private suspend fun handleTcpClient(client: Socket) {
+        val clientIp = runCatching { client.inetAddress?.hostAddress }.getOrNull() ?: ""
+        val meteredIn = CountingInputStream(client.getInputStream())
+        val meteredOut = CountingOutputStream(client.getOutputStream())
         try {
             client.soTimeout = 300000
-            val input = DataInputStream(client.getInputStream())
-            val output = DataOutputStream(client.getOutputStream())
+            val input = DataInputStream(meteredIn)
+            val output = DataOutputStream(meteredOut)
 
             // greeting
             val version = input.readUnsignedByte()
@@ -247,6 +250,8 @@ class Socks5Server(
             }
         } catch (_: Exception) {
             runCatching { client.close() }
+        } finally {
+            ClientUsage.add(clientIp, meteredIn.bytes() + meteredOut.bytes())
         }
     }
 
@@ -454,6 +459,7 @@ class Socks5Server(
                 try {
                     sessionNow.socket.send(DatagramPacket(payload, payload.size, dstAddr, dstPort))
                     sessionNow.tx += payload.size
+                    ClientUsage.add(pkt.address?.hostAddress ?: "", payload.size.toLong())
                 } catch (e: Exception) {
                     onLog("UDP send fail $dstHost:$dstPort via $net: ${e.message}")
                 }
@@ -523,6 +529,7 @@ class Socks5Server(
                 System.arraycopy(header, 0, response, 0, 10)
                 System.arraycopy(buf, 0, response, 10, dataLen)
                 relaySocket.send(DatagramPacket(response, total, clientAddr, clientPort))
+                ClientUsage.add(clientAddr.hostAddress ?: "", total.toLong())
             }
         } finally {
             runCatching { session.socket.close() }

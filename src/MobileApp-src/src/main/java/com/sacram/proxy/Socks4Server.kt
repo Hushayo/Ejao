@@ -148,10 +148,13 @@ class Socks4Server(
     }
 
     private suspend fun handleClient(client: Socket) {
+        val clientIp = runCatching { client.inetAddress?.hostAddress }.getOrNull() ?: ""
+        val meteredIn = CountingInputStream(client.getInputStream())
+        val meteredOut = CountingOutputStream(client.getOutputStream())
         try {
             client.soTimeout = 300000
-            val input = DataInputStream(client.getInputStream())
-            val output = DataOutputStream(client.getOutputStream())
+            val input = DataInputStream(meteredIn)
+            val output = DataOutputStream(meteredOut)
 
             val version = input.readUnsignedByte()
             if (version != 0x04) {
@@ -197,6 +200,8 @@ class Socks4Server(
             if (userid.isEmpty()) Unit
         } catch (_: Exception) {
             runCatching { client.close() }
+        } finally {
+            ClientUsage.add(clientIp, meteredIn.bytes() + meteredOut.bytes())
         }
     }
 

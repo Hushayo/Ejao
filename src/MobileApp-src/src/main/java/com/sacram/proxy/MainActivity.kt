@@ -32,7 +32,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.switchmaterial.SwitchMaterial
-import com.google.android.material.tabs.TabLayout
+import android.view.animation.DecelerateInterpolator
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -234,26 +234,54 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupTabs() {
-        val tabLayout = findViewById<TabLayout>(R.id.tabLayout)
         val tabProxy = findViewById<LinearLayout>(R.id.tabProxy)
         val tabKeepalive = findViewById<LinearLayout>(R.id.tabKeepalive)
-        val tabCount = 2
-        tabLayout.addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
-            override fun onTabSelected(tab: TabLayout.Tab) {
-                tabProxy.visibility = if (tab.position == 0) View.VISIBLE else View.GONE
-                tabKeepalive.visibility = if (tab.position == 1) View.VISIBLE else View.GONE
+        val pill = findViewById<View>(R.id.bottomPill)
+        val indicator = findViewById<View>(R.id.pillIndicator)
+        val btnProxy = findViewById<TextView>(R.id.pillProxy)
+        val btnKeep = findViewById<TextView>(R.id.pillKeep)
+        var selected = 0
+        fun paint() {
+            btnProxy.setTextColor(if (selected == 0) 0xFF171412.toInt() else 0xFFB8A99F.toInt())
+            btnKeep.setTextColor(if (selected == 1) 0xFF171412.toInt() else 0xFFB8A99F.toInt())
+        }
+        // Slides the ink capsule behind the active pill button. Both buttons
+        // live in the same padded FrameLayout as the indicator, so the target
+        // button's left edge is already the correct translationX.
+        fun place(animate: Boolean) {
+            val target = if (selected == 0) btnProxy else btnKeep
+            if (target.width == 0) return
+            val params = indicator.layoutParams
+            params.width = target.width
+            indicator.layoutParams = params
+            if (animate) {
+                indicator.animate().translationX(target.left.toFloat())
+                    .setDuration(220)
+                    .setInterpolator(DecelerateInterpolator())
+                    .start()
+            } else {
+                indicator.translationX = target.left.toFloat()
             }
-
-            override fun onTabUnselected(tab: TabLayout.Tab) {}
-            override fun onTabReselected(tab: TabLayout.Tab) {}
-        })
+        }
+        fun select(i: Int, animate: Boolean = true) {
+            val changed = i != selected
+            selected = i
+            tabProxy.visibility = if (i == 0) View.VISIBLE else View.GONE
+            tabKeepalive.visibility = if (i == 1) View.VISIBLE else View.GONE
+            paint()
+            if (changed || !animate) place(animate)
+        }
+        btnProxy.setOnClickListener { select(0) }
+        btnKeep.setOnClickListener { select(1) }
+        btnProxy.post { select(0, animate = false) }
+        // Re-glue the capsule after rotations/resizes change button widths.
+        pill.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> place(false) }
         // Swipe left/right anywhere on the screen to switch tabs (the app's tabs
         // are plain LinearLayouts, so we detect the horizontal swipe ourselves
         // instead of using a ViewPager). direction -1 = next tab, +1 = previous.
         findViewById<SwipeScrollView>(R.id.mainScroll).onSwipe = { dir ->
-            val cur = tabLayout.selectedTabPosition
-            val target = (cur + dir).coerceIn(0, tabCount - 1)
-            if (target != cur) tabLayout.selectTab(tabLayout.getTabAt(target))
+            val target = (selected + dir).coerceIn(0, 1)
+            if (target != selected) select(target)
         }
     }
 

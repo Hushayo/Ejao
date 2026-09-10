@@ -9,7 +9,7 @@
         <!-- Brand-colored controls: inputs, checkboxes, focus states -->
         <item name="colorControlNormal">@color/surface_line</item>
         <item name="colorControlActivated">@color/accent</item>
-        <item name="android:textColorHint">#6B7589</item>
+        <item name="android:textColorHint">#A8A29E</item>
 
         <!-- Outlined text fields get the accent stroke + rounded corners -->
         <item name="textInputStyle">@style/Widget.Sacram.TextInputLayout</item>
@@ -18,13 +18,13 @@
         <item name="android:colorBackground">@color/bg</item>
         <item name="android:textColorPrimary">@color/text_primary</item>
         <item name="android:textColorSecondary">@color/text_secondary</item>
-        <item name="android:buttonCornerRadius">14dp</item>
+        <item name="android:buttonCornerRadius">12dp</item>
     </style>
 
     <style name="Widget.Sacram.TextInputLayout" parent="Widget.MaterialComponents.TextInputLayout.OutlinedBox">
         <item name="boxStrokeColor">@color/accent</item>
         <item name="hintTextColor">@color/accent</item>
         <item name="boxStrokeWidthFocused">2dp</item>
-        <item name="android:textColorHint">#6B7589</item>
+        <item name="android:textColorHint">#A8A29E</item>
     </style>
 </resources>

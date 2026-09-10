@@ -1,21 +1,21 @@
 <resources>
-    <color name="primary">#1B2736</color>
-    <color name="on_primary">#FFFFFF</color>
-    <color name="bg">#0E0F12</color>
-    <color name="text_primary">#FFFFFF</color>
-    <color name="text_secondary">#9AA3B2</color>
+    <color name="primary">#F5F2EE</color>
+    <color name="on_primary">#171412</color>
+    <color name="bg">#171412</color>
+    <color name="text_primary">#F5F2EE</color>
+    <color name="text_secondary">#B8A99F</color>
 
     <!-- Single calm accent (no gradients) -->
-    <color name="accent">#4F8EF7</color>
-    <color name="accent_pressed">#3A78C8</color>
-    <color name="accent_blue">#4F8EF7</color>
-    <color name="accent_blue_pressed">#3A78C8</color>
+    <color name="accent">#4ADE80</color>
+    <color name="accent_pressed">#22C55E</color>
+    <color name="accent_blue">#4ADE80</color>
+    <color name="accent_blue_pressed">#22C55E</color>
 
-    <color name="surface">#171A21</color>
-    <color name="surface_line">#262B36</color>
+    <color name="surface">#201C1A</color>
+    <color name="surface_line">#332D29</color>
 
-    <color name="status_bg">#123026</color>
-    <color name="status_border">#3DDC84</color>
-    <color name="danger">#F0654F</color>
-    <color name="ok">#2E7D32</color>
+    <color name="status_bg">#26211D</color>
+    <color name="status_border">#4ADE80</color>
+    <color name="danger">#F87171</color>
+    <color name="ok">#4ADE80</color>
 </resources>

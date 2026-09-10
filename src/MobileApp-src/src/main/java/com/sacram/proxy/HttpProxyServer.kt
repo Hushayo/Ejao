@@ -260,8 +260,11 @@ class HttpProxyServer(
     }
 
     private suspend fun handleClient(client: Socket) {
-        val reader = StreamReader(client.getInputStream())
-        val output = BufferedOutputStream(client.getOutputStream(), clientBufSize)
+        val clientIp = runCatching { client.inetAddress?.hostAddress }.getOrNull() ?: ""
+        val meteredIn = CountingInputStream(client.getInputStream())
+        val meteredOut = CountingOutputStream(client.getOutputStream())
+        val reader = StreamReader(meteredIn)
+        val output = BufferedOutputStream(meteredOut, clientBufSize)
         try {
             client.soTimeout = 300000
             while (running.get()) {
@@ -302,6 +305,7 @@ class HttpProxyServer(
             }
         } catch (_: Exception) {
         } finally {
+            ClientUsage.add(clientIp, meteredIn.bytes() + meteredOut.bytes())
             runCatching { client.close() }
         }
     }

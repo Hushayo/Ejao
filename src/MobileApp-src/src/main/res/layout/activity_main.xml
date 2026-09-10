@@ -1,37 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
-<com.sacram.proxy.SwipeScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
-    android:id="@+id/mainScroll"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@android:color/transparent"
-    android:fillViewport="true">
+    android:background="@android:color/transparent">
+
+    <com.sacram.proxy.SwipeScrollView
+        android:id="@+id/mainScroll"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@android:color/transparent"
+        android:clipToPadding="false"
+        android:fillViewport="true">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="vertical">
-
-        <com.google.android.material.tabs.TabLayout
-            android:id="@+id/tabLayout"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:background="@android:color/transparent"
-            android:paddingTop="6dp"
-            app:tabIndicatorColor="@color/accent"
-            app:tabSelectedTextColor="@color/accent"
-            app:tabTextColor="#8891A0">
-
-            <com.google.android.material.tabs.TabItem
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Proxy" />
-
-            <com.google.android.material.tabs.TabItem
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Misc" />
-        </com.google.android.material.tabs.TabLayout>
+        android:orientation="vertical"
+        android:paddingBottom="100dp">
 
         <!-- ============ TAB 1: PROXY ============ -->
         <LinearLayout
@@ -41,43 +27,47 @@
             android:orientation="vertical"
             android:padding="16dp">
 
-            <TextView
-                android:id="@+id/tvStatus"
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:background="@drawable/bg_status"
-                android:padding="16dp"
-                android:text="Stopped"
-                android:textColor="#EAF2EC"
-                android:textIsSelectable="true"
-                android:textSize="15sp"
-                android:textStyle="bold" />
+                android:orientation="vertical"
+                android:padding="16dp">
 
-            <TextView
-                android:id="@+id/tvInfo"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:background="@drawable/bg_card"
-                android:fontFamily="monospace"
-                android:padding="14dp"
-                android:text="--"
-                android:textColor="#CDD6E3"
-                android:textIsSelectable="true"
-                android:textSize="13sp" />
+                <TextView
+                    android:id="@+id/tvStatus"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Stopped"
+                    android:textColor="#F6F5F1"
+                    android:textIsSelectable="true"
+                    android:textSize="15sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tvInfo"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:fontFamily="monospace"
+                    android:text="--"
+                    android:textColor="#D6D3D1"
+                    android:textIsSelectable="true"
+                    android:textSize="13sp" />
+            </LinearLayout>
 
             <Button
                 android:id="@+id/btnToggle"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
+                android:layout_marginTop="12dp"
                 android:background="@drawable/bg_button_primary"
                 android:fontFamily="sans-serif-medium"
                 android:minHeight="52dp"
                 android:padding="14dp"
                 android:text="START PROXY"
                 android:textAllCaps="false"
-                android:textColor="#FFFFFF"
+                android:textColor="#171412"
                 android:textSize="15sp"
                 android:textStyle="bold"
                 app:backgroundTint="@null" />
@@ -85,11 +75,13 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="26dp"
+                android:layout_marginTop="22dp"
                 android:layout_marginBottom="10dp"
+                android:drawableStart="@drawable/ic_wifi"
+                android:drawablePadding="8dp"
                 android:letterSpacing="0.06"
-                android:text="HOTSPOT SETTINGS"
-                android:textColor="@color/accent"
+                android:text="WI-FI DIRECT"
+                android:textColor="@color/text_secondary"
                 android:textSize="12sp"
                 android:textStyle="bold" />
 
@@ -150,7 +142,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp"
                     android:layout_marginBottom="4dp"
-                    android:text="2.4 GHz reaches farther and works with older devices; 5 GHz is faster but shorter range. Auto lets the phone decide. Some devices ignore this and pick their own band."
+                    android:text="2.4 GHz = range + compatibility. 5 GHz = speed. Auto = phone decides."
                     android:textColor="@color/text_secondary"
                     android:textSize="11sp" />
 
@@ -176,7 +168,7 @@
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp"
                     android:layout_marginBottom="4dp"
-                    android:text="Auto = use the default mode. UDP/SOCKS5 or HTTP proxy mode."
+                    android:text="Auto runs SOCKS5 + HTTP together."
                     android:textColor="@color/text_secondary"
                     android:textSize="11sp" />
 
@@ -223,7 +215,36 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="6dp"
-                    android:text="SOCKS5 port shows for SOCKS5/Hybrid; HTTP port shows for HTTP/Hybrid. Both sit side-by-side for Hybrid."
+                    android:text="Shown per mode. Hybrid shows both."
+                    android:textColor="@color/text_secondary"
+                    android:textIsSelectable="true"
+                    android:textSize="12sp" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="22dp"
+                android:layout_marginBottom="10dp"
+                android:drawableStart="@drawable/ic_server"
+                android:drawablePadding="8dp"
+                android:letterSpacing="0.06"
+                android:text="ENDPOINTS"
+                android:textColor="@color/text_secondary"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_card"
+                android:orientation="vertical"
+                android:padding="14dp">
+
+                <TextView
+                    android:id="@+id/tvPanelUrl"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
                     android:textColor="@color/text_secondary"
                     android:textIsSelectable="true"
                     android:textSize="12sp" />
@@ -261,9 +282,11 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:drawableStart="@drawable/ic_clock"
+                android:drawablePadding="8dp"
                 android:letterSpacing="0.06"
                 android:text="APP UPDATE"
-                android:textColor="@color/accent"
+                android:textColor="@color/text_secondary"
                 android:textSize="12sp"
                 android:textStyle="bold" />
 
@@ -277,7 +300,7 @@
                 android:minHeight="50dp"
                 android:text="CHECK FOR UPDATES"
                 android:textAllCaps="false"
-                android:textColor="#E8ECF1"
+                android:textColor="@color/text_primary"
                 android:textSize="14sp"
                 android:textStyle="bold"
                 app:backgroundTint="@null" />
@@ -355,7 +378,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
-                    android:text="How often Sacram checks GitHub over your current connection (including cellular). Turn off if you're on limited data."
+                    android:text="How often Sacram checks GitHub. Off saves metered data."
                     android:textColor="@color/text_secondary"
                     android:textSize="12sp" />
             </LinearLayout>
@@ -363,10 +386,12 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="26dp"
+                android:layout_marginTop="22dp"
+                android:drawableStart="@drawable/ic_shield"
+                android:drawablePadding="8dp"
                 android:letterSpacing="0.06"
                 android:text="KEEP SACRAM ALIVE"
-                android:textColor="@color/accent"
+                android:textColor="@color/text_secondary"
                 android:textSize="12sp"
                 android:textStyle="bold" />
 
@@ -380,7 +405,7 @@
                 android:minHeight="50dp"
                 android:text="REQUEST BATTERY EXEMPTION"
                 android:textAllCaps="false"
-                android:textColor="#E8ECF1"
+                android:textColor="@color/text_primary"
                 android:textSize="14sp"
                 android:textStyle="bold"
                 app:backgroundTint="@null" />
@@ -395,7 +420,7 @@
                 android:minHeight="50dp"
                 android:text="AUTOSTART SETTINGS"
                 android:textAllCaps="false"
-                android:textColor="#E8ECF1"
+                android:textColor="@color/text_primary"
                 android:textSize="14sp"
                 android:textStyle="bold"
                 app:backgroundTint="@null" />
@@ -410,7 +435,7 @@
                 android:minHeight="50dp"
                 android:text="OPEN SETUP GUIDE (WIKI)"
                 android:textAllCaps="false"
-                android:textColor="#E8ECF1"
+                android:textColor="@color/text_primary"
                 android:textSize="14sp"
                 android:textStyle="bold"
                 app:backgroundTint="@null" />
@@ -418,10 +443,12 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="26dp"
+                android:layout_marginTop="22dp"
+                android:drawableStart="@drawable/ic_pulse"
+                android:drawablePadding="8dp"
                 android:letterSpacing="0.06"
                 android:text="NETWORK KEEP-ALIVE PING"
-                android:textColor="@color/accent"
+                android:textColor="@color/text_secondary"
                 android:textSize="12sp"
                 android:textStyle="bold" />
 
@@ -429,7 +456,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
-                android:text="While the proxy runs, Sacram pings the URL below on an interval so the OS sees traffic and is less likely to idle or kill it. Edit and start/restart the proxy to apply."
+                android:text="Periodic pings keep the OS from killing the proxy. Applies on restart."
                 android:textColor="@color/text_secondary"
                 android:textSize="12sp" />
 
@@ -472,10 +499,12 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="26dp"
+                android:layout_marginTop="22dp"
+                android:drawableStart="@drawable/ic_server"
+                android:drawablePadding="8dp"
                 android:letterSpacing="0.06"
                 android:text="CONTROL PANEL"
-                android:textColor="@color/accent"
+                android:textColor="@color/text_secondary"
                 android:textSize="12sp"
                 android:textStyle="bold" />
 
@@ -494,19 +523,10 @@
                     android:text="Require approval for panel restart" />
 
                 <TextView
-                    android:id="@+id/tvPanelUrl"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
-                    android:textColor="@color/text_secondary"
-                    android:textIsSelectable="true"
-                    android:textSize="12sp" />
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:text="When on, panel restarts need in-app approval within 10s. Off (default) restarts immediately."
+                    android:text="When on, panel restarts need in-app approval within 10s. Off restarts immediately."
                     android:textColor="@color/text_secondary"
                     android:textSize="12sp" />
             </LinearLayout>
@@ -514,10 +534,10 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="26dp"
+                android:layout_marginTop="22dp"
                 android:letterSpacing="0.06"
                 android:text="FEATURE TOGGLES"
-                android:textColor="@color/accent"
+                android:textColor="@color/text_secondary"
                 android:textSize="12sp"
                 android:textStyle="bold" />
 
@@ -539,7 +559,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp"
-                    android:text="Hides the band dropdown and forces 2.4 GHz. Use if your phone ignores the band you pick."
+                    android:text="Force 2.4 GHz and hide the picker."
                     android:textColor="@color/text_secondary"
                     android:textSize="12sp" />
 
@@ -554,7 +574,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp"
-                    android:text="When Android silently drops the WiFi Direct group, never give up - keep recreating it until it comes back instead of leaving the AP dead."
+                    android:text="Recreate a dropped group forever instead of leaving the AP dead."
                     android:textColor="@color/text_secondary"
                     android:textSize="12sp" />
 
@@ -569,7 +589,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp"
-                    android:text="If WiFi is off, wait and bring the proxy back up on its own the moment WiFi turns on - no need to toggle it off and on in the app."
+                    android:text="Bring the proxy up on its own when WiFi turns on."
                     android:textColor="@color/text_secondary"
                     android:textSize="12sp" />
             </LinearLayout>
@@ -585,4 +605,58 @@
         </LinearLayout>
 
     </LinearLayout>
-</com.sacram.proxy.SwipeScrollView>
+    </com.sacram.proxy.SwipeScrollView>
+
+    <!-- Floating bottom pill nav: sliding ink capsule marks the active tab -->
+    <FrameLayout
+        android:id="@+id/bottomPill"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="20dp"
+        android:background="@drawable/bg_pill"
+        android:elevation="10dp"
+        android:padding="5dp">
+
+        <View
+            android:id="@+id/pillIndicator"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:background="@drawable/bg_pill_selected" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/pillProxy"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:drawableTop="@drawable/ic_server"
+                android:drawablePadding="2dp"
+                android:gravity="center"
+                android:minWidth="118dp"
+                android:padding="10dp"
+                android:text="Proxy"
+                android:textColor="#171412"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/pillKeep"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:drawableTop="@drawable/ic_shield"
+                android:drawablePadding="2dp"
+                android:gravity="center"
+                android:minWidth="118dp"
+                android:padding="10dp"
+                android:text="Keep-Alive"
+                android:textColor="#B8A99F"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+    </FrameLayout>
+
+</FrameLayout>
