@@ -18,4 +18,10 @@
     <color name="status_border">#4ADE80</color>
     <color name="danger">#F87171</color>
     <color name="ok">#4ADE80</color>
+
+    <!-- Launcher icon background. Dedicated value on purpose: the adaptive
+        icon pairs it with a white foreground, so it must stay dark even if
+        theme colors change (reusing @color/primary turned the icon
+        white-on-off-white and invisible). -->
+    <color name="ic_launcher_background">#171412</color>
 </resources>
