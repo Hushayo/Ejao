@@ -250,9 +250,10 @@ class MainActivity : AppCompatActivity() {
         // button's left edge is already the correct translationX.
         fun place(animate: Boolean) {
             val target = if (selected == 0) btnProxy else btnKeep
-            if (target.width == 0) return
+            if (target.width == 0 || target.height == 0) return
             val params = indicator.layoutParams
             params.width = target.width
+            params.height = target.height
             indicator.layoutParams = params
             if (animate) {
                 indicator.animate().translationX(target.left.toFloat())
