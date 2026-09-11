@@ -10,9 +10,13 @@ object ProxyState {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_SHOULD_RUN, false)
 
     fun setShouldRun(context: Context, value: Boolean) {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit()
-            .putBoolean(KEY_SHOULD_RUN, value)
-            .apply()
+        // commit() (not apply()) so shouldRun survives an immediate process
+        // kill after onStartCommand/onDestroy; single bool write is cheap.
+        runCatching {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(KEY_SHOULD_RUN, value)
+                .commit()
+        }
     }
 }

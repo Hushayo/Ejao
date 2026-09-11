@@ -27,6 +27,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 class ProxyService : Service() {
 
@@ -84,6 +85,8 @@ class ProxyService : Service() {
     private var restartJob: Job? = null
     private var keepAliveJob: Job? = null
     private var startedAt: Long = 0L
+    private var pipelineJob: Job? = null
+    private val pipelineGen = AtomicInteger(0)
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -118,7 +121,8 @@ class ProxyService : Service() {
                 runCatching { ProxyState.setShouldRun(this, true) }
                 runCatching { scheduleWatchdog(this) }
                 keepAliveJob = runCatching { KeepAlive.launch(scope, this) }.getOrNull()
-                scope.launch { runPipeline() }
+                val gen = pipelineGen.incrementAndGet()
+                pipelineJob = scope.launch { runPipeline(gen) }
             }
             return START_STICKY
         } catch (e: Exception) {
@@ -127,7 +131,7 @@ class ProxyService : Service() {
         }
     }
 
-    private suspend fun runPipeline() {
+    private suspend fun runPipeline(myGen: Int = pipelineGen.get()) {
         Log.i(TAG, "runPipeline start, sdk=${Build.VERSION.SDK_INT}, model=${Build.MODEL}")
         updateStatus("Starting...")
         try {
@@ -136,7 +140,10 @@ class ProxyService : Service() {
 
             AppState.running.value = true
             updateStatus("Checking WiFi...")
-            var wifiOk = WifiDirectManager(this@ProxyService).ensureWifiOn()
+            // Single WifiDirectManager instance reused for the whole pipeline
+            // (ensureWifiOn + group ops share one P2P channel).
+            val p2p = WifiDirectManager(this)
+            var wifiOk = p2p.ensureWifiOn()
             Log.i(TAG, "ensureWifiOn result=$wifiOk")
             if (!wifiOk) {
                 if (config.autoRestartOnWifiReturn) {
@@ -146,7 +153,7 @@ class ProxyService : Service() {
                         if (!ConfigManager.load(this@ProxyService).autoRestartOnWifiReturn) break
                         updateStatus("WiFi is off - waiting for it to return before (re)starting the proxy...")
                         delay(5000)
-                        wifiOk = WifiDirectManager(this@ProxyService).ensureWifiOn()
+                        wifiOk = p2p.ensureWifiOn()
                     }
                 }
                 if (!wifiOk) {
@@ -156,25 +163,27 @@ class ProxyService : Service() {
                 }
             }
             Log.i(TAG, "proxy starting wifiOk=$wifiOk port=${config.port}")
-            val p2p = WifiDirectManager(this)
 
             updateStatus("Creating WiFi Direct group...")
-            var createOk = false
+            // Atomic flags: P2P callbacks arrive on the main looper while this
+            // coroutine waits on Dispatchers.IO - plain Boolean is not visible
+            // across threads without synchronization.
+            val createOk = AtomicBoolean(false)
             var createMsg = ""
             p2p.removeExistingGroup {
                 val band = if (config.disableBandSelector) "2.4" else config.band
                 p2p.createGroup(config.ssid, config.password, band) { ok, msg ->
-                    createOk = ok
                     createMsg = msg
+                    createOk.set(ok)
                     Log.i(TAG, "createGroup result ok=$ok msg=$msg band=$band")
                 }
             }
             var waited = 0
-            while (!createOk && waited < 5000) {
+            while (!createOk.get() && waited < 5000) {
                 delay(200); waited += 200
             }
-            Log.i(TAG, "createGroup waited=${waited}ms ok=$createOk msg=$createMsg")
-            if (!createOk) {
+            Log.i(TAG, "createGroup waited=${waited}ms ok=${createOk.get()} msg=$createMsg")
+            if (!createOk.get()) {
                 Log.e(TAG, "proxy_error: $createMsg")
                 updateStatus("ERROR: $createMsg")
                 stopSelf()
@@ -184,23 +193,23 @@ class ProxyService : Service() {
             // wait until group info is available
             var groupSsid = ""
             var groupPass = ""
-            var formed = false
+            val formed = AtomicBoolean(false)
             for (i in 0 until 60) {
                 delay(500)
-                var got = false
+                val got = AtomicBoolean(false)
                 p2p.requestGroupInfo { g ->
-                    got = true
+                    got.set(true)
                     if (g != null) {
-                        formed = true
+                        formed.set(true)
                         groupSsid = g.networkName
                         groupPass = g.passphrase
                     }
                 }
                 var loop = 0
-                while (!got && loop < 20) { delay(50); loop++ }
-                if (formed) break
+                while (!got.get() && loop < 20) { delay(50); loop++ }
+                if (formed.get()) break
             }
-            if (!formed) {
+            if (!formed.get()) {
                 Log.e(TAG, "proxy_error: group did not form")
                 updateStatus("ERROR: group did not form")
                 stopSelf()
@@ -319,14 +328,20 @@ class ProxyService : Service() {
             }
 
             // client count poller + group-keepalive + proxy health (every 5s)
-            var groupRecreateGuard = false
+            // Atomic guard: requestGroupInfo callbacks can overlap across polls,
+            // so compareAndSet prevents double-recreate launches.
+            val groupRecreateGuard = AtomicBoolean(false)
             var groupRecreateCount = 0
             val groupRecreateMax = 21
+            // Debounce for the localhost proxy probe: a single failed probe
+            // (e.g. during restart/bind) must not flap the status to DOWN.
+            var downStreak = 0
             var lastRx = readP2pBytes()?.first ?: -1L
             var lastTx = readP2pBytes()?.second ?: -1L
             var lastNetT = System.currentTimeMillis()
-            while (currentCoroutineContext().isActive && started.get()) {
+            while (currentCoroutineContext().isActive && started.get() && pipelineGen.get() == myGen) {
                 delay(5000)
+                if (pipelineGen.get() != myGen || !started.get()) return
                 // Hotspot interface throughput: delta of rx/tx byte counters
                 // over the poll interval. Resets/wraps (new < old) yield 0.
                 try {
@@ -351,26 +366,34 @@ class ProxyService : Service() {
                 }
                 // Self-heal the backup dashboard: if it died, bring it back so
                 // there is always a restart path over WiFi Direct.
+                // Reload fresh config so a changed backup port is honoured
+                // instead of the stale pipeline-start snapshot.
                 if ((backupPanel == null || backupPanel?.isRunning() != true) && started.get()) {
                     val lastGoIp = AppState.apInfo.value.goIp.ifEmpty { goIp }
-                    startBackupPanel(lastGoIp, config)
+                    val fresh = runCatching { ConfigManager.load(this) }.getOrDefault(config)
+                    startBackupPanel(lastGoIp, fresh)
                 }
                 // Proxy health probe: if all expected proxy ports refuse
                 // localhost connections, the proxy is down. The WiFi Direct
                 // group may still be up (group != null below confirms it on
                 // the next poll) - point the user at the backup panel which
                 // is still serving on its own port/scope.
+                // Debounced: only report DOWN after 2 consecutive down probes.
                 if (isMainProxyDown(config)) {
-                    val bPort = backupPanelPortActual
-                    val bUrl = if (bPort > 0) "Backup restart: http://${AppState.apInfo.value.goIp.ifEmpty { goIp }}:$bPort/" else "Backup panel unavailable - toggle proxy off/on in app"
-                    // Only overwrite the status line when we are not already
-                    // reporting group re-forming; group state is resolved below.
-                    if (!proxyDownNotified) {
-                        proxyDownNotified = true
-                        Log.w(TAG, "Main proxy ports closed but service alive - backup panel at $bUrl")
+                    downStreak++
+                    if (downStreak >= 2) {
+                        val bPort = backupPanelPortActual
+                        val bUrl = if (bPort > 0) "Backup restart: http://${AppState.apInfo.value.goIp.ifEmpty { goIp }}:$bPort/" else "Backup panel unavailable - toggle proxy off/on in app"
+                        // Only overwrite the status line when we are not already
+                        // reporting group re-forming; group state is resolved below.
+                        if (!proxyDownNotified) {
+                            proxyDownNotified = true
+                            Log.w(TAG, "Main proxy ports closed but service alive - backup panel at $bUrl")
+                        }
+                        AppState.status.value = "PROXY DOWN - WiFi Direct still up. $bUrl"
                     }
-                    AppState.status.value = "PROXY DOWN - WiFi Direct still up. $bUrl"
                 } else {
+                    downStreak = 0
                     if (proxyDownNotified) {
                         proxyDownNotified = false
                         Log.i(TAG, "Main proxy recovered - clearing PROXY DOWN state")
@@ -387,20 +410,24 @@ class ProxyService : Service() {
                         // leaving HTTP mode's group dead forever (status still says
                         // RUNNING while 192.168.49.1 is unreachable) is worse: the
                         // client's browser just redials on the next request anyway.
-                        if (!groupRecreateGuard && started.get()) {
+                        if (started.get() && groupRecreateGuard.compareAndSet(false, true)) {
                             if (!config.keepRetryingReform && groupRecreateCount >= groupRecreateMax) {
                                 // Already retried the cap number of times and the
                                 // "keep retrying" toggle is off; stop spamming
-                                // recreation and leave it dead.
+                                // recreation and leave it dead. Release guard so
+                                // a later toggle change can retry.
+                                groupRecreateGuard.set(false)
                                 AppState.status.value = "RUNNING - AP gave up re-forming (max $groupRecreateMax retries)"
                                 return@requestGroupInfo
                             }
-                            groupRecreateGuard = true
                             groupRecreateCount++
                             Log.w(TAG, "WiFi Direct group lost (inactivity) - recreating to keep AP alive (retry $groupRecreateCount/$groupRecreateMax)")
                             scope.launch {
-                                recreateGroup(p2p, config)
-                                groupRecreateGuard = false
+                                try {
+                                    recreateGroup(p2p, config)
+                                } finally {
+                                    groupRecreateGuard.set(false)
+                                }
                             }
                         }
                         AppState.apInfo.value = AppState.apInfo.value.copy(clients = 0)
@@ -522,11 +549,14 @@ class ProxyService : Service() {
                 updateStatus("Backup panel: http://$goIp:$bound/ (use if proxy goes down)")
             } else {
                 backupPanelPortActual = 0
+                // Clear stale port so UI does not link a dead backup panel.
+                runCatching { AppState.apInfo.value = AppState.apInfo.value.copy(backupPanelPort = 0) }
                 Log.w(TAG, "Backup panel failed to bind (wanted $wanted)")
             }
         } catch (e: Exception) {
             Log.w(TAG, "startBackupPanel failed: ${e.message}")
             backupPanelPortActual = 0
+            runCatching { AppState.apInfo.value = AppState.apInfo.value.copy(backupPanelPort = 0) }
         }
     }
 
@@ -631,22 +661,22 @@ class ProxyService : Service() {
                 Log.w(TAG, "recreateGroup remove/create failed: ${e.message}")
                 return
             }
-        var formed = false
+        val formed = AtomicBoolean(false)
         for (i in 0 until 30) {
             delay(500)
             if (!started.get()) return
-            var got = false
+            val got = AtomicBoolean(false)
             try {
-                p2p.requestGroupInfo { g -> got = true; if (g != null) formed = true }
+                p2p.requestGroupInfo { g -> got.set(true); if (g != null) formed.set(true) }
             } catch (e: Exception) {
                 Log.w(TAG, "recreateGroup poll failed: ${e.message}")
                 return
             }
             var loop = 0
-            while (!got && loop < 20) { delay(50); loop++ }
-            if (formed) break
+            while (!got.get() && loop < 20) { delay(50); loop++ }
+            if (formed.get()) break
         }
-        if (formed) {
+        if (formed.get()) {
             try {
                 p2p.requestGroupInfo { g ->
                     runCatching {
@@ -686,9 +716,17 @@ class ProxyService : Service() {
     private fun restartProxy() {
         if (!started.get()) return
         scope.launch {
+            // Invalidate old pipeline first: its 5s loop checks gen and exits.
+            val myGen = pipelineGen.incrementAndGet()
             try {
                 Log.i(TAG, "proxy_restart reason=config_changed")
                 updateStatus("Config changed, restarting...")
+                // Stop old pipeline loop before tearing down servers.
+                runCatching {
+                    pipelineJob?.cancel()
+                    pipelineJob?.join()
+                }
+                if (pipelineGen.get() != myGen || !started.get()) return@launch
                 // NOTE: backupPanel is deliberately NOT stopped here - it stays up
                 // over WiFi Direct so there is always a restart path even if the
                 // new pipeline fails to bind the main proxy ports.
@@ -706,7 +744,8 @@ class ProxyService : Service() {
                     p2p.removeGroup { }
                 }
                 delay(1500)
-                runPipeline()
+                if (pipelineGen.get() != myGen || !started.get()) return@launch
+                pipelineJob = scope.launch { runPipeline(myGen) }
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) return@launch
                 Log.e(TAG, "restart failed", e)
@@ -717,10 +756,12 @@ class ProxyService : Service() {
 
     override fun onDestroy() {
         started.set(false)
+        pipelineGen.incrementAndGet()
         runCatching { ProxyState.setShouldRun(this, false) }
         runCatching { cancelWatchdog(this) }
         Log.i(TAG, "proxy_stopped")
         restartJob?.cancel()
+        pipelineJob?.cancel()
         keepAliveJob?.cancel()
         runCatching { fileObserver?.stopWatching() }
         runCatching { socks?.stop() }

@@ -47,7 +47,7 @@ object ClientUsage {
     private val bytes = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>()
 
     fun add(ip: String, n: Long) {
-        if (ip.isEmpty() || n <= 0) return
+        if (ip.isBlank() || n <= 0) return
         bytes.computeIfAbsent(ip) { java.util.concurrent.atomic.AtomicLong() }.addAndGet(n)
     }
 

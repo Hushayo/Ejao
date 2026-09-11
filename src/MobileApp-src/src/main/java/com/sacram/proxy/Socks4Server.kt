@@ -60,7 +60,7 @@ class Socks4Server(
     private val running = AtomicBoolean(true)
     private var serverSocket: ServerSocket? = null
     private var tcpJob: Job? = null
-    private var cellularNetwork: Network? = null
+    @Volatile private var cellularNetwork: Network? = null
     private var netCallback: ConnectivityManager.NetworkCallback? = null
 
     // Match Socks5Server buffer sizing for the same high-latency cellular egress.
@@ -71,8 +71,8 @@ class Socks4Server(
 
     private val dnsCache = ConcurrentHashMap<String, Pair<List<InetAddress>, Long>>()
     private val dnsTtlMs = 60_000L
-    private var cachedNet: Network? = null
-    private var cachedNetTime = 0L
+    @Volatile private var cachedNet: Network? = null
+    @Volatile private var cachedNetTime = 0L
 
     private val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
@@ -217,6 +217,7 @@ class Socks4Server(
             val b = input.readUnsignedByte()
             if (b == 0) break
             out.write(b)
+            if (out.size() > 256) throw IOException("SOCKS4 string too long")
         }
         return String(out.toByteArray(), Charsets.ISO_8859_1)
     }
@@ -232,8 +233,10 @@ class Socks4Server(
         val addrs = try {
             future.get(dnsTimeoutMs.toLong(), TimeUnit.MILLISECONDS)
         } catch (e: TimeoutException) {
+            future.cancel(true)
             throw IOException("DNS resolution timed out for $host on egress network $net", e)
         } catch (e: Exception) {
+            future.cancel(true)
             throw IOException("DNS resolution failed for $host on egress network $net", e)
         }
         if (addrs.isEmpty()) throw IOException("DNS resolution failed for $host on egress network $net")
@@ -292,6 +295,46 @@ class Socks4Server(
                         lastErr = e.message
                     }
                 }
+                if (up == null) {
+                    // Egress may have gone stale; retry once on a fresh network,
+                    // then once on the default route (mirrors HttpProxyServer tiers).
+                    val fresh = NetworkUtils.pickCellular(cm, null)
+                    if (fresh != null && fresh != net) {
+                        val freshAddrs = runCatching { withContext(proxyDispatcher) { resolve(target, fresh) } }.getOrNull().orEmpty()
+                        for (a in freshAddrs) {
+                            val sock = Socket()
+                            try {
+                                fresh.bindSocket(sock)
+                                sock.connect(InetSocketAddress(a, targetPort), 8000)
+                                sock.tcpNoDelay = true
+                                sock.soTimeout = tunnelIdleTimeoutMs
+                                tuneSocket(sock)
+                                up = sock
+                                break
+                            } catch (e: Exception) {
+                                runCatching { sock.close() }
+                                lastErr = e.message
+                            }
+                        }
+                    }
+                }
+                if (up == null) {
+                    val defAddrs = runCatching { withContext(proxyDispatcher) { resolve(target, null) } }.getOrNull().orEmpty()
+                    for (a in defAddrs) {
+                        val sock = Socket()
+                        try {
+                            sock.connect(InetSocketAddress(a, targetPort), 8000)
+                            sock.tcpNoDelay = true
+                            sock.soTimeout = tunnelIdleTimeoutMs
+                            tuneSocket(sock)
+                            up = sock
+                            break
+                        } catch (e: Exception) {
+                            runCatching { sock.close() }
+                            lastErr = e.message
+                        }
+                    }
+                }
                 if (up == null) throw IOException("could not connect to $target:$targetPort via $net : $lastErr")
                 upstream = up
                 reply(output, 0x5A) // granted
@@ -347,7 +390,8 @@ class Socks4Server(
                 total += n
                 if (n < buf.size) dst.flush()
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
         }
         return total
     }

@@ -62,7 +62,6 @@ class PanelServer(
         }
         running.set(true)
         tcpJob = scope.launch { runServer() }
-        onLog("Control panel listening on port $port")
     }
 
     fun stop() {
@@ -85,6 +84,7 @@ class PanelServer(
             runCatching { ss.setReceiveBufferSize(64 * 1024) }
             ss.bind(InetSocketAddress("0.0.0.0", port), 64)
             serverSocket = ss
+            onLog("Control panel listening on port $port")
             while (running.get()) {
                 val client = try {
                     ss.accept()
@@ -165,12 +165,19 @@ class PanelServer(
             "Cache-Control: no-cache\r\nConnection: keep-alive\r\nX-Accel-Buffering: no\r\n\r\n"
         output.write(header.toByteArray(Charsets.UTF_8))
         output.flush()
+        // Park cap: close the stream after 5 min or 300 messages so one open
+        // tab never parks a pool thread forever. Browser auto-reconnects.
+        runCatching { client.soTimeout = 310_000 }
         try {
-            AppState.status.collect { value ->
-                if (!running.get() || client.isClosed) throw IOException("stream closed")
-                val line = "data: ${escapeSse(value)}\n\n"
-                output.write(line.toByteArray(Charsets.UTF_8))
-                output.flush()
+            var n = 0
+            kotlinx.coroutines.withTimeoutOrNull(5 * 60 * 1000L) {
+                AppState.status.collect { value ->
+                    if (!running.get() || client.isClosed) throw IOException("stream closed")
+                    val line = "data: ${escapeSse(value)}\n\n"
+                    output.write(line.toByteArray(Charsets.UTF_8))
+                    output.flush()
+                    if (++n > 300) throw IOException("stream ttl")
+                }
             }
         } catch (_: Exception) {
             // Client disconnected or panel stopping - normal end of stream.
@@ -392,7 +399,7 @@ class PanelServer(
         <form method="post" action="/">
         <section class="card">
             <div class="card-head"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><path d="M12 20h.01"/></svg>Wi-Fi Direct</div>
-            <div class="kv"><div><div class="kv-k">SSID</div><div class="kv-v" id="v-ssid">${escapeHtml(info.ssid)}</div></div><button class="mini-btn" type="button" onclick="sacramCopy(this,'${escapeHtml(info.ssid)}')">Copy</button></div>
+            <div class="kv"><div><div class="kv-k">SSID</div><div class="kv-v" id="v-ssid">${escapeHtml(info.ssid)}</div></div><button class="mini-btn" type="button" data-copy="${escapeHtml(info.ssid)}" onclick="sacramCopy(this,this.getAttribute('data-copy'))">Copy</button></div>
             <div class="kv"><div><div class="kv-k">Password</div><div class="kv-v" id="v-pass" data-real="${escapeHtml(info.passphrase)}">&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;</div></div><span style="display:flex;gap:6px"><button class="mini-btn" type="button" onclick="sacramPw()">Show</button><button class="mini-btn" type="button" onclick="sacramCopyPass(this)">Copy</button></span></div>
             <span class="field-label">Band</span>
             <div class="seg">

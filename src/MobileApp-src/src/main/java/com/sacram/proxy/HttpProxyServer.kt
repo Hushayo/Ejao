@@ -362,6 +362,10 @@ class HttpProxyServer(
                     ?.substringAfter(':')?.trim()?.toIntOrNull()
                 if (method == "POST" || method == "PUT" || method == "PATCH") {
                     if (contentLength != null) {
+                        if (contentLength > 8 * 1024 * 1024 || contentLength < 0) {
+                            writeSimpleResponse(output, 413, "Payload Too Large")
+                            return
+                        }
                         val body = ByteArray(contentLength)
                         var read = 0
                         while (read < contentLength) {
@@ -500,8 +504,10 @@ class HttpProxyServer(
         val addrs = try {
             future.get(dnsTimeoutMs.toLong(), TimeUnit.MILLISECONDS)
         } catch (e: TimeoutException) {
+            future.cancel(true)
             throw IOException("DNS resolution timed out for $host on egress network $net", e)
         } catch (e: Exception) {
+            future.cancel(true)
             throw IOException("DNS resolution failed for $host on egress network $net", e)
         }
         if (addrs.isEmpty()) throw IOException("DNS resolution failed for $host on egress network $net")
@@ -662,6 +668,7 @@ class HttpProxyServer(
             output.write(sizeLine.toByteArray(Charsets.ISO_8859_1))
             output.write(CRLF)
             val size = sizeLine.split(";")[0].trim().toIntOrNull(16) ?: return
+            if (size < 0 || size > 8 * 1024 * 1024) return
             if (size == 0) {
                 while (true) {
                     val trailer = readLine(input) ?: return
@@ -812,6 +819,7 @@ class HttpProxyServer(
                         if (l.isEmpty()) return
                     }
                 }
+                if (size < 0 || size > 8 * 1024 * 1024) return
                 val body = ByteArray(size)
                 var read = 0
                 while (read < size) {
@@ -846,7 +854,8 @@ class HttpProxyServer(
                 total += n
                 if (n < buf.size) dst.flush()
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
         }
         return total
     }
@@ -932,6 +941,7 @@ private class StreamReader(private val src: InputStream) : InputStream() {
     private var pos = 0
     private var end = 0
     private var lineBuf = ByteArray(256)
+    private val MAX_LINE = 32 * 1024
 
     override fun read(): Int {
         if (pos >= end && !fill()) return -1
@@ -984,6 +994,7 @@ private class StreamReader(private val src: InputStream) : InputStream() {
     fun hasRemaining(): Boolean = pos < end
 
     private fun growLine(len: Int) {
+        if (lineBuf.size * 2 > MAX_LINE || len + 1 > MAX_LINE) throw IOException("header too large")
         val newBuf = ByteArray(maxOf(lineBuf.size * 2, len + 1))
         System.arraycopy(lineBuf, 0, newBuf, 0, len)
         lineBuf = newBuf

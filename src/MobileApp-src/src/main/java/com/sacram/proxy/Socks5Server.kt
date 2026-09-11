@@ -67,7 +67,7 @@ class Socks5Server(
     private var tcpJob: Job? = null
     private var udpJob: Job? = null
     private var udpSweepJob: Job? = null
-    private var cellularNetwork: Network? = null
+    @Volatile private var cellularNetwork: Network? = null
     private var netCallback: ConnectivityManager.NetworkCallback? = null
 
     private val maxUdpSessions = 1024
@@ -89,8 +89,8 @@ class Socks5Server(
 
     private val dnsCache = ConcurrentHashMap<String, Pair<List<InetAddress>, Long>>()
     private val dnsTtlMs = 60_000L
-    private var cachedNet: Network? = null
-    private var cachedNetTime = 0L
+    @Volatile private var cachedNet: Network? = null
+    @Volatile private var cachedNetTime = 0L
 
     private val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
@@ -133,11 +133,13 @@ class Socks5Server(
     private val udpSessions = ConcurrentHashMap<String, UdpSession>()
 
     private class UdpSession(val socket: DatagramSocket) {
-        var lastActivity = System.currentTimeMillis()
+        @Volatile var lastActivity = System.currentTimeMillis()
         // Cumulative bytes for this relay session: tx = client->server (upload),
         // rx = server->client (download). Reported when the session ends.
-        var tx = 0L
-        var rx = 0L
+        // @Volatile for cross-thread visibility (sweep vs relay loop); tx+=
+        // remains racy but visibility is fixed.
+        @Volatile var tx = 0L
+        @Volatile var rx = 0L
     }
 
     fun start() {
@@ -203,7 +205,13 @@ class Socks5Server(
                 } catch (e: Exception) {
                     break
                 }
-                scope.launch { handleUdpPacket(sock, pkt, buf.copyOf(pkt.length)) }
+                // Capture address/port/length synchronously: pkt is reused on
+                // the next receive, so async work must not read pkt afterwards.
+                val clientAddr = pkt.address
+                val clientPort = pkt.port
+                val dataCopy = buf.copyOf(pkt.length)
+                if (clientAddr == null) continue
+                scope.launch { handleUdpPacket(sock, clientAddr, clientPort, dataCopy) }
             }
         } catch (e: Exception) {
             if (running.get()) onLog("UDP server error: $e")
@@ -277,8 +285,10 @@ class Socks5Server(
         val addrs = try {
             future.get(dnsTimeoutMs.toLong(), TimeUnit.MILLISECONDS)
         } catch (e: TimeoutException) {
+            future.cancel(true)
             throw IOException("DNS resolution timed out for $host on egress network $net", e)
         } catch (e: Exception) {
+            future.cancel(true)
             throw IOException("DNS resolution failed for $host on egress network $net", e)
         }
         if (addrs.isEmpty()) throw IOException("DNS resolution failed for $host on egress network $net")
@@ -353,11 +363,52 @@ class Socks5Server(
                         sock.connect(InetSocketAddress(a, targetPort), 8000)
                         sock.tcpNoDelay = true
                         sock.soTimeout = tunnelIdleTimeoutMs
+                        tuneSocket(sock)
                         up = sock
                         break
                     } catch (e: Exception) {
                         runCatching { sock.close() }
                         lastErr = e.message
+                    }
+                }
+                if (up == null) {
+                    // Egress may have gone stale; retry once on a fresh network,
+                    // then once on the default route (mirrors HttpProxyServer tiers).
+                    val fresh = NetworkUtils.pickCellular(cm, null)
+                    if (fresh != null && fresh != net) {
+                        val freshAddrs = runCatching { withContext(proxyDispatcher) { resolve(target, fresh) } }.getOrNull().orEmpty()
+                        for (a in freshAddrs) {
+                            val sock = Socket()
+                            try {
+                                fresh.bindSocket(sock)
+                                sock.connect(InetSocketAddress(a, targetPort), 8000)
+                                sock.tcpNoDelay = true
+                                sock.soTimeout = tunnelIdleTimeoutMs
+                                tuneSocket(sock)
+                                up = sock
+                                break
+                            } catch (e: Exception) {
+                                runCatching { sock.close() }
+                                lastErr = e.message
+                            }
+                        }
+                    }
+                }
+                if (up == null) {
+                    val defAddrs = runCatching { withContext(proxyDispatcher) { resolve(target, null) } }.getOrNull().orEmpty()
+                    for (a in defAddrs) {
+                        val sock = Socket()
+                        try {
+                            sock.connect(InetSocketAddress(a, targetPort), 8000)
+                            sock.tcpNoDelay = true
+                            sock.soTimeout = tunnelIdleTimeoutMs
+                            tuneSocket(sock)
+                            up = sock
+                            break
+                        } catch (e: Exception) {
+                            runCatching { sock.close() }
+                            lastErr = e.message
+                        }
                     }
                 }
                 if (up == null) throw IOException("could not connect to $target:$targetPort via $net : $lastErr")
@@ -404,7 +455,12 @@ class Socks5Server(
         runCatching { client.close() }
     }
 
-    private suspend fun handleUdpPacket(sock: DatagramSocket, pkt: DatagramPacket, data: ByteArray) {
+    private suspend fun handleUdpPacket(
+        sock: DatagramSocket,
+        clientAddr: InetAddress,
+        clientPort: Int,
+        data: ByteArray
+    ) {
         try {
             if (data.size < 10) return
             val rsv0 = data[0]; val rsv1 = data[1]; val frag = data[2].toInt() and 0xff
@@ -433,38 +489,53 @@ class Socks5Server(
             val dstPort = ((data[idx].toInt() and 0xff) shl 8) or (data[idx + 1].toInt() and 0xff)
             val payload = data.copyOfRange(idx + 2, data.size)
 
-            val clientKey = "${pkt.address.hostAddress}:${pkt.port}"
+            val clientKey = "${clientAddr.hostAddress}:${clientPort}"
             val net = pickNet()
-            // computeIfAbsent creates at most one session per client key, so two
-            // packets from a brand-new client can never both insert and orphan a
-            // socket. The reply loop is only launched for the session we actually
-            // inserted ([isNew]).
+            // No computeIfAbsent: its mapping fn must not touch the map
+            // (recursive update crash) nor block on socket create/bind.
+            // Create outside, insert atomically with putIfAbsent.
+            var sessionNow = udpSessions[clientKey]
             var isNew = false
-            val sessionNow = udpSessions.computeIfAbsent(clientKey) {
-                isNew = true
+            if (sessionNow == null) {
                 enforceUdpSessionCap()
-                val fwd = DatagramSocket()
-                net?.bindSocket(fwd)
-                fwd.soTimeout = 1000
-                UdpSession(fwd)
+                val fwd = try {
+                    DatagramSocket().also {
+                        net?.bindSocket(it)
+                        it.soTimeout = 1000
+                    }
+                } catch (e: Exception) {
+                    onLog("UDP session create fail: ${e.message}")
+                    return
+                }
+                val newSession = UdpSession(fwd)
+                val prev = udpSessions.putIfAbsent(clientKey, newSession)
+                if (prev == null) {
+                    sessionNow = newSession
+                    isNew = true
+                    if (udpSessions.size > maxUdpSessions) enforceUdpSessionCap()
+                } else {
+                    runCatching { fwd.close() }
+                    sessionNow = prev
+                }
             }
+            val session = sessionNow ?: return
             if (isNew) {
                 scope.launch {
                     udpSem.acquire()
                     try {
-                        runUdpReplyLoop(sessionNow, sock, pkt.address, pkt.port)
+                        runUdpReplyLoop(session, sock, clientAddr, clientPort)
                     } finally {
                         udpSem.release()
                     }
                 }
             }
-            sessionNow.lastActivity = System.currentTimeMillis()
+            session.lastActivity = System.currentTimeMillis()
             try {
                 val dstAddr = resolve(dstHost, net).first()
                 try {
-                    sessionNow.socket.send(DatagramPacket(payload, payload.size, dstAddr, dstPort))
-                    sessionNow.tx += payload.size
-                    ClientUsage.add(pkt.address?.hostAddress ?: "", payload.size.toLong())
+                    session.socket.send(DatagramPacket(payload, payload.size, dstAddr, dstPort))
+                    session.tx += payload.size
+                    ClientUsage.add(clientAddr.hostAddress ?: "", payload.size.toLong())
                 } catch (e: Exception) {
                     onLog("UDP send fail $dstHost:$dstPort via $net: ${e.message}")
                 }
@@ -602,7 +673,8 @@ class Socks5Server(
                 // short read); otherwise let TCP coalesce into full segments.
                 if (n < buf.size) dst.flush()
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
         }
         return total
     }

@@ -192,7 +192,7 @@ object ConfigManager {
             AppConfig(
                 ssid = p.getProperty("ssid", defaultConfig.ssid),
                 password = p.getProperty("password", defaultConfig.password),
-                port = p.getProperty("port", defaultConfig.port.toString()).toIntOrNull() ?: defaultConfig.port,
+                port = p.getProperty("port", defaultConfig.port.toString()).toIntOrNull()?.coerceIn(1, 65535) ?: defaultConfig.port,
                 band = p.getProperty("band", defaultConfig.band)
                     .ifBlank { defaultConfig.band }
                     .let { if (it in setOf("2.4", "5", "auto")) it else defaultConfig.band },
@@ -201,7 +201,7 @@ object ConfigManager {
                     .ifBlank { defaultConfig.proxyMode },
                 proxyType = p.getProperty("proxy_type", "0").toIntOrNull() ?: 0,
                 httpPort = p.getProperty("http_port", defaultConfig.httpPort.toString()).toIntOrNull()
-                    ?: defaultConfig.httpPort,
+                    ?.coerceIn(1, 65535) ?: defaultConfig.httpPort,
                 socks4Port = p.getProperty("socks4_port", defaultConfig.socks4Port.toString()).toIntOrNull()
                     ?.coerceIn(1, 65535) ?: defaultConfig.socks4Port,
                 keepaliveUrl = p.getProperty("keepalive_url", defaultConfig.keepaliveUrl)
@@ -230,6 +230,7 @@ object ConfigManager {
     }
 
     fun save(context: Context, config: AppConfig) {
+        synchronized(ConfigManager) {
         try {
             val file = internalConfigFile(context)
             val lines = listOf(
@@ -255,10 +256,17 @@ object ConfigManager {
             "update_check_interval_hours=${config.updateCheckIntervalHours}"
         )
         val text = lines.joinToString("\n") + "\n"
-        file.writeText(text)
+        // Atomic write: tmp + rename avoids torn reads on crash/kill.
+        val tmp = File(file.parent, "$FILE_NAME.tmp")
+        tmp.writeText(text)
+        if (!tmp.renameTo(file)) {
+            file.writeText(text)
+            runCatching { tmp.delete() }
+        }
         mirrorToExternal(context)
         writeGlobalConfig(context, text)
         } catch (_: Exception) {
+        }
         }
     }
 }

@@ -62,15 +62,17 @@ class BackupPanelServer(
         var bound = -1
         var ss: ServerSocket? = null
         for (p in requestedPort..requestedPort + 5) {
+            var cur: ServerSocket? = null
             try {
                 val s = ServerSocket()
+                cur = s
                 s.reuseAddress = true
                 s.bind(InetSocketAddress("0.0.0.0", p), 32)
                 ss = s
                 bound = p
                 break
             } catch (_: Exception) {
-                runCatching { ss?.close() }
+                runCatching { cur?.close() }
                 ss = null
             }
         }
@@ -351,7 +353,7 @@ class BackupPanelServer(
             var dot=document.getElementById('v-dot');
             if(dot) dot.className='dot'+(d.proxyAlive?' on':' off');
             var log=document.getElementById('v-log');
-            if(log&&d.status){log.innerHTML='<div class="log-line">'+d.status.replace(/</g,'&lt;')+'</div>';}
+            if(log&&d.status){log.textContent=d.status;}
           }catch(e){}
         }
         sacramRefresh();

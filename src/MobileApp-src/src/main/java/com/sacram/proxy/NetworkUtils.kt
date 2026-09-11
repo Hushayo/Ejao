@@ -33,6 +33,16 @@ object NetworkUtils {
         // had working internet. The WiFi-Direct P2P interface lacks
         // NET_CAPABILITY_INTERNET, so it is never selected here.
         val active = runCatching { cm.activeNetwork }.getOrNull()
+        // Prefer VALIDATED networks first, fall back to INTERNET-only (Honor
+        // workaround: some OEMs report INTERNET without VALIDATED on a working
+        // path, so VALIDATED must never be required).
+        if (isValidatedEgress(cm, active)) return active
+        for (n in nets) {
+            if (isValidCellular(cm, n) && isValidatedEgress(cm, n)) return n
+        }
+        for (n in nets) {
+            if (isValidatedEgress(cm, n)) return n
+        }
         if (isValidEgress(cm, active)) return active
         for (n in nets) {
             if (isValidCellular(cm, n)) return n
@@ -56,5 +66,12 @@ object NetworkUtils {
         if (n == null) return false
         val caps = runCatching { cm.getNetworkCapabilities(n) }.getOrNull() ?: return false
         return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
+    fun isValidatedEgress(cm: ConnectivityManager, n: Network?): Boolean {
+        if (n == null) return false
+        val caps = runCatching { cm.getNetworkCapabilities(n) }.getOrNull() ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
     }
 }

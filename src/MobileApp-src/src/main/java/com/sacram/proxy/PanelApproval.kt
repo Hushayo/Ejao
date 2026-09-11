@@ -34,6 +34,8 @@ object PanelApproval {
     var onRestart: (() -> Unit)? = null
 
     fun submit(fields: Map<String, String>): Request {
+        // Replace any existing pending request, even if younger than the
+        // window: the newest submit is the owner's latest intent.
         val r = Request(counter.incrementAndGet(), fields, System.currentTimeMillis())
         _pending.value = r
         return r
@@ -44,6 +46,10 @@ object PanelApproval {
     fun approve(context: Context): Boolean {
         return try {
             val r = _pending.value ?: return false
+            if (System.currentTimeMillis() - r.submittedAt > APPROVE_WINDOW_MS) {
+                _pending.value = null
+                return false
+            }
             if (r.fields["action"] == "restart") {
                 runCatching { onRestart?.invoke() }
                 _pending.value = null
