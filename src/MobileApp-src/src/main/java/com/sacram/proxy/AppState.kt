@@ -17,18 +17,11 @@ object AppState {
     val running = MutableStateFlow(false)
     val httpMode = MutableStateFlow(false)
     val tcpTunnels = MutableStateFlow(0)
-    // Non-null once a background update check finds + finishes downloading a
-    // newer release. Holds the version tag (e.g. "v1.80"); the app never
-    // installs automatically, this only flips the UI into "ready to install".
+    val isReforming = MutableStateFlow(false)
     val updateAvailable = MutableStateFlow<String?>(null)
     var serviceStartedAt: Long = 0L
-    // Wi-Fi Direct interface throughput, sampled by ProxyService's health
-    // loop from /sys/class/net/<p2p-iface>/statistics. Bits/sec.
-    // 0 = unknown (iface not found / counters unreadable).
     @Volatile var netDownBps: Long = 0L
     @Volatile var netUpBps: Long = 0L
-    // LAN clients resolved by ProxyService (P2P device names + ARP IPs +
-    // metered usage). Rendered by the panel's Connected clients card.
     val lanClients = MutableStateFlow<List<LanClient>>(emptyList())
 }
 
@@ -38,11 +31,6 @@ data class LanClient(
     val mb: Double = 0.0
 )
 
-/**
- * Per-client byte accounting. Proxy pumps call [add] with the relayed
- * client's LAN IP; the panel reads [snapshotMb]. Keyed by IP because that
- * is the only client identity visible at the socket layer.
- */
 object ClientUsage {
     private val bytes = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>()
 

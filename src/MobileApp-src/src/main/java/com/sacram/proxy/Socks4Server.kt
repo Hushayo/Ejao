@@ -32,18 +32,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
-/**
- * SOCKS4 / SOCKS4a backward-compatibility server (TCP CONNECT only).
- *
- * SOCKS4 has no UDP ASSOCIATE and no auth negotiation, so this server only
- * handles CONNECT. SOCKS4a (hostnames) is supported: when the client sends a
- * destination IP of 0.0.0.x (x != 0) the hostname follows the userid in the
- * request. SOCKS4 BIND is not supported and is rejected with status 0x5B.
- *
- * Egress DNS resolution and upstream socket binding use the exact same cellular
- * selection logic as [Socks5Server] so SOCKS4 clients route over the phone's
- * data connection just like SOCKS5 clients.
- */
 class Socks4Server(
     private val port: Int,
     private val context: Context,
@@ -53,9 +41,6 @@ class Socks4Server(
     private val workerExecutor = Executors.newCachedThreadPool()
     private val tcpSem = Semaphore(512)
     private val proxyDispatcher = workerExecutor.asCoroutineDispatcher()
-    private val DNS_POOL_SIZE = 16
-    private val dnsExecutor = Executors.newFixedThreadPool(DNS_POOL_SIZE)
-    private val dnsTimeoutMs = 5_000
     private val scope = CoroutineScope(SupervisorJob() + proxyDispatcher)
     private val running = AtomicBoolean(true)
     private var serverSocket: ServerSocket? = null
@@ -63,16 +48,10 @@ class Socks4Server(
     @Volatile private var cellularNetwork: Network? = null
     private var netCallback: ConnectivityManager.NetworkCallback? = null
 
-    // Match Socks5Server buffer sizing for the same high-latency cellular egress.
     private val socketRcvBuf = 512 * 1024
     private val socketSndBuf = 512 * 1024
     private val tunnelIdleTimeoutMs = 100_000
     private val tunnelCount = AtomicInteger(0)
-
-    private val dnsCache = ConcurrentHashMap<String, Pair<List<InetAddress>, Long>>()
-    private val dnsTtlMs = 60_000L
-    @Volatile private var cachedNet: Network? = null
-    @Volatile private var cachedNetTime = 0L
 
     private val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
@@ -112,6 +91,7 @@ class Socks4Server(
 
     fun start() {
         running.set(true)
+        EgressManager.init(context)
         bindToCellular()
         tcpJob = scope.launch { runTcpServer() }
         onLog("SOCKS4 listening tcp on port $port")
@@ -129,7 +109,6 @@ class Socks4Server(
         tcpJob?.cancel()
         scope.cancel()
         runCatching { workerExecutor.shutdownNow() }
-        runCatching { dnsExecutor.shutdownNow() }
     }
 
     private suspend fun runTcpServer() {
@@ -163,27 +142,21 @@ class Socks4Server(
 
             val version = input.readUnsignedByte()
             if (version != 0x04) {
-                // Not a SOCKS4 client; we have nothing to say on this protocol,
-                // just close. (SOCKS5 clients hit Socks5Server on its own port.)
                 client.close(); return
             }
             val cmd = input.readUnsignedByte()
             val targetPort = input.readUnsignedShort()
-            // SOCKS4 destination IP (4 bytes, network order)
             val ip = ByteArray(4)
             input.readFully(ip)
-            // SOCKS4a: IP is 0.0.0.x (x != 0) and the hostname follows the userid.
             val isSocks4a = (ip[0].toInt() and 0xff == 0) &&
                 (ip[1].toInt() and 0xff == 0) &&
                 (ip[2].toInt() and 0xff == 0) &&
                 (ip[3].toInt() and 0xff != 0)
 
-            // userid: null-terminated string (may be empty).
             val userid = readNullTerminatedString(input)
 
             val target: String
             if (isSocks4a) {
-                // Hostname follows the userid as another null-terminated string.
                 val host = readNullTerminatedString(input).trim()
                 if (host.isEmpty()) {
                     reply(output, 0x5B); client.close(); return
@@ -195,22 +168,19 @@ class Socks4Server(
             }
 
             when (cmd) {
-                0x01 -> handleConnect(client, input, output, target, targetPort, isSocks4a)
+                0x01 -> handleConnect(client, input, output, target, targetPort, isSocks4a, clientIp)
                 else -> {
-                    // Only CONNECT is supported. BIND (0x02) -> rejected.
                     reply(output, 0x5B); client.close()
                 }
             }
-            // userid is unused for egress but kept for protocol completeness.
             if (userid.isEmpty()) Unit
         } catch (_: Exception) {
             runCatching { client.close() }
         } finally {
-            ClientUsage.add(clientIp, meteredIn.bytes() + meteredOut.bytes())
+            runCatching { client.close() }
         }
     }
 
-    /** Reads a single NUL-terminated string from the stream. */
     private fun readNullTerminatedString(input: DataInputStream): String {
         val out = java.io.ByteArrayOutputStream()
         while (true) {
@@ -223,44 +193,10 @@ class Socks4Server(
     }
 
     private fun resolve(host: String, net: Network?): List<InetAddress> {
-        val now = System.currentTimeMillis()
-        val cached = dnsCache[host]
-        if (cached != null && cached.second > now) return cached.first
-        val future = dnsExecutor.submit<List<InetAddress>> {
-            (if (net != null) net.getAllByName(host) else InetAddress.getAllByName(host))
-                ?.toList().orEmpty()
-        }
-        val addrs = try {
-            future.get(dnsTimeoutMs.toLong(), TimeUnit.MILLISECONDS)
-        } catch (e: TimeoutException) {
-            future.cancel(true)
-            throw IOException("DNS resolution timed out for $host on egress network $net", e)
-        } catch (e: Exception) {
-            future.cancel(true)
-            throw IOException("DNS resolution failed for $host on egress network $net", e)
-        }
-        if (addrs.isEmpty()) throw IOException("DNS resolution failed for $host on egress network $net")
-        val ordered = addrs.filter { it.address.size == 4 } + addrs.filter { it.address.size != 4 }
-        dnsCache[host] = ordered to (now + dnsTtlMs)
-        return ordered
+        return EgressManager.resolve(host, net)
     }
 
-    private fun pickNet(): Network? {
-        val now = System.currentTimeMillis()
-        val active = cm.activeNetwork
-        if (NetworkUtils.isValidEgress(cm, active)) {
-            if (cachedNet != active) { cachedNet = active; cachedNetTime = now }
-            return active
-        }
-        val cached = cachedNet
-        if (cached != null && now - cachedNetTime < 8000 && NetworkUtils.isValidEgress(cm, cached)) {
-            return cached
-        }
-        val n = NetworkUtils.pickCellular(cm, null) ?: cached
-        cachedNet = n
-        cachedNetTime = now
-        return n
-    }
+    private fun pickNet(host: String? = null): Network? = EgressManager.pickNet(cm, host)
 
     private suspend fun handleConnect(
         client: Socket,
@@ -268,7 +204,8 @@ class Socks4Server(
         output: DataOutputStream,
         target: String,
         targetPort: Int,
-        isSocks4a: Boolean
+        isSocks4a: Boolean,
+        clientIp: String
     ) {
         tcpSem.withPermit {
             var upstream: Socket? = null
@@ -276,7 +213,7 @@ class Socks4Server(
             AppState.tcpTunnels.value = tunnelCount.get()
             val t0 = System.currentTimeMillis()
             try {
-                val net = pickNet()
+                val net = pickNet(target)
                 val addrs = withContext(proxyDispatcher) { resolve(target, net) }
                 var up: Socket? = null
                 var lastErr: String? = null
@@ -296,8 +233,6 @@ class Socks4Server(
                     }
                 }
                 if (up == null) {
-                    // Egress may have gone stale; retry once on a fresh network,
-                    // then once on the default route (mirrors HttpProxyServer tiers).
                     val fresh = NetworkUtils.pickCellular(cm, null)
                     if (fresh != null && fresh != net) {
                         val freshAddrs = runCatching { withContext(proxyDispatcher) { resolve(target, fresh) } }.getOrNull().orEmpty()
@@ -337,19 +272,27 @@ class Socks4Server(
                 }
                 if (up == null) throw IOException("could not connect to $target:$targetPort via $net : $lastErr")
                 upstream = up
+                EgressManager.reportSuccess(target)
                 reply(output, 0x5A) // granted
                 onLog("SOCKS4 TCP ${if (isSocks4a) "[4a]" else ""} $target:$targetPort")
                 val tx = AtomicLong(0L)
                 val rx = AtomicLong(0L)
                 val jobIn = scope.launch {
-                    try { tx.set(pump(input, up.getOutputStream())) } finally { runCatching { up.shutdownOutput() } }
+                    try { tx.set(pump(input, up.getOutputStream()) { n ->
+                        TrafficStats.addTx(n.toLong())
+                        ClientUsage.add(clientIp, n.toLong())
+                    }) } finally { runCatching { up.shutdownOutput() } }
                 }
                 val jobOut = scope.launch {
-                    try { rx.set(pump(up.getInputStream(), output)) } finally { runCatching { client.shutdownOutput() } }
+                    try { rx.set(pump(up.getInputStream(), output) { n ->
+                        TrafficStats.addRx(n.toLong())
+                        ClientUsage.add(clientIp, n.toLong())
+                    }) } finally { runCatching { client.shutdownOutput() } }
                 }
                 jobIn.join(); jobOut.join()
                 reportTunnel(target, targetPort, System.currentTimeMillis() - t0, tx.get(), rx.get())
             } catch (e: Exception) {
+                EgressManager.reportFailure(target)
                 onLog("SOCKS4 TCP fail $target:$targetPort: ${e.message}")
                 runCatching { reply(output, 0x5B) }
             } finally {
@@ -361,10 +304,6 @@ class Socks4Server(
         }
     }
 
-    /**
-     * SOCKS4 reply: byte 0 = 0x00 (version null), byte 1 = status,
-     * bytes 2-3 = port (ignored, 0), bytes 4-7 = IP (ignored, 0).
-     */
     private fun reply(output: DataOutputStream, status: Int) {
         runCatching {
             output.writeByte(0x00)
@@ -375,11 +314,10 @@ class Socks4Server(
         }
     }
 
-    /** Closed SOCKS4 tunnel accounting hook (no-op; telemetry removed). */
     private fun reportTunnel(target: String, targetPort: Int, dms: Long, tx: Long, rx: Long) {
     }
 
-    private suspend fun pump(src: InputStream, dst: OutputStream): Long {
+    private suspend fun pump(src: InputStream, dst: OutputStream, onChunk: ((Int) -> Unit)? = null): Long {
         val buf = PUMP_BUF.get()
         var total = 0L
         try {
@@ -388,6 +326,7 @@ class Socks4Server(
                 if (n <= 0) break
                 dst.write(buf, 0, n)
                 total += n
+                onChunk?.invoke(n)
                 if (n < buf.size) dst.flush()
             }
         } catch (e: Exception) {

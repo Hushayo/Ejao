@@ -221,6 +221,7 @@ class PanelServer(
             }
             append("],")
             append("\"requireApprovalRestart\":").append(cfg.requireApprovalRestart).append(',')
+            append("\"isReforming\":").append(AppState.isReforming.value).append(',')
             append("\"version\":\"").append(BuildConfig.VERSION_NAME).append("\",")
             append("\"startedAt\":").append(AppState.serviceStartedAt).append(',')
             append("\"serverNow\":").append(System.currentTimeMillis())
@@ -672,8 +673,9 @@ class PanelServer(
         .grid5{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}
         .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
         .card.slim{padding:12px 16px}
-        .danger-row{display:flex;align-items:center;gap:14px}
-        .btn-inline{width:auto;margin-top:0;padding:10px 22px;flex-shrink:0}
+        .danger-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+        .danger-row>div:first-child{flex:1 1 200px;min-width:0}
+        .btn.btn-inline{width:auto;margin-top:0;padding:10px 22px;flex-shrink:0;align-self:center}
         .live-text{font-size:11px;font-weight:700;color:var(--text-faint);letter-spacing:.06em;text-transform:uppercase}
         .live-text.off{color:var(--red)}
         .stat-k{font-size:11px;color:var(--text-faint);margin-bottom:3px;font-weight:700;
@@ -756,7 +758,7 @@ class PanelServer(
 
         .foot{text-align:center;color:var(--text-faint);font-size:11px;margin-top:22px}
 
-        @media(max-width:640px){.grid2{grid-template-columns:1fr}.grid5{grid-template-columns:1fr 1fr}}
+        @media(max-width:640px){.grid2{grid-template-columns:1fr}.grid5{grid-template-columns:1fr 1fr}.danger-row{flex-direction:column;align-items:stretch}.btn.btn-inline{width:100%}}
         </style>
     """.trimIndent()
 

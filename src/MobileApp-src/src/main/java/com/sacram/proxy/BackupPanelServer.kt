@@ -258,6 +258,7 @@ class BackupPanelServer(
             append("\"panelPort\":").append(s.panelPort).append(',')
             append("\"backupPort\":").append(actualPort).append(',')
             append("\"uptime\":").append(uptime).append(',')
+            append("\"isReforming\":").append(AppState.isReforming.value).append(',')
             append("\"status\":\"").append(escapeJson(s.status)).append("\",")
             append("\"serverNow\":").append(System.currentTimeMillis())
             append('}')

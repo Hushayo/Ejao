@@ -35,9 +35,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
-/**
- * SOCKS5 server (RFC 1928) with TCP CONNECT and UDP ASSOCIATE.
- */
 class Socks5Server(
     private val port: Int,
     private val advertiseIp: String,
@@ -45,21 +42,10 @@ class Socks5Server(
     private val onLog: (String) -> Unit = {}
 ) {
 
-    // Dedicated worker pool so many parallel TCP CONNECT establishments don't
-    // queue behind the shared Dispatchers.IO cap and stall the whole proxy.
-    // Elastic pool: threads are created on demand (one per live connection) and
-    // reclaimed after 60s idle instead of sitting parked - no wasted standby
-    // threads. Separate semaphores for TCP and UDP so that long-lived UDP
-    // plumbing (relay loops + associate control reads) can never starve new
-    // TCP CONNECT establishments of a slot. [tcpSem] caps concurrent TCP tunnels
-    // at 512; [udpSem] caps concurrent UDP relay loops at 1024 (= maxUdpSessions).
     private val workerExecutor = Executors.newCachedThreadPool()
     private val tcpSem = Semaphore(512)
     private val udpSem = Semaphore(1024)
     private val proxyDispatcher = workerExecutor.asCoroutineDispatcher()
-    private val DNS_POOL_SIZE = 16
-    private val dnsExecutor = Executors.newFixedThreadPool(DNS_POOL_SIZE)
-    private val dnsTimeoutMs = 5_000
     private val scope = CoroutineScope(SupervisorJob() + proxyDispatcher)
     private val running = AtomicBoolean(true)
     private var serverSocket: ServerSocket? = null
@@ -72,25 +58,11 @@ class Socks5Server(
 
     private val maxUdpSessions = 1024
 
-    // Socket buffer sizes, mirroring HttpProxyServer. Cellular egress is
-    // high-latency, so the bandwidth-delay product is large; platform-default
-    // buffers (~8-64KB) cap a single stream's throughput well below what the
-    // radio can do. Applied to the client TCP socket, every upstream TCP
-    // socket, and the UDP relay/session sockets so large transfers and bulk
-    // UDP (e.g. game streaming, voice) can actually saturate the link.
     private val socketRcvBuf = 512 * 1024
     private val socketSndBuf = 512 * 1024
 
-    // Idle timeout for CONNECT tunnels. Longer than any per-request read timeout:
-    // a stalled upstream with no soTimeout blocks its pump coroutine forever.
     private val tunnelIdleTimeoutMs = 100_000
-    // Live count of open TCP CONNECT tunnels, surfaced via AppState.
     private val tunnelCount = AtomicInteger(0)
-
-    private val dnsCache = ConcurrentHashMap<String, Pair<List<InetAddress>, Long>>()
-    private val dnsTtlMs = 60_000L
-    @Volatile private var cachedNet: Network? = null
-    @Volatile private var cachedNetTime = 0L
 
     private val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
@@ -129,21 +101,17 @@ class Socks5Server(
         runCatching { sock.setSendBufferSize(socketSndBuf) }
     }
 
-    // key "clientIp:port" -> forwarding socket for UDP sessions
     private val udpSessions = ConcurrentHashMap<String, UdpSession>()
 
     private class UdpSession(val socket: DatagramSocket) {
         @Volatile var lastActivity = System.currentTimeMillis()
-        // Cumulative bytes for this relay session: tx = client->server (upload),
-        // rx = server->client (download). Reported when the session ends.
-        // @Volatile for cross-thread visibility (sweep vs relay loop); tx+=
-        // remains racy but visibility is fixed.
-        @Volatile var tx = 0L
-        @Volatile var rx = 0L
+        val tx = AtomicLong(0L)
+        val rx = AtomicLong(0L)
     }
 
     fun start() {
         running.set(true)
+        EgressManager.init(context)
         bindToCellular()
         tcpJob = scope.launch { runTcpServer() }
         udpJob = scope.launch { runUdpServer() }
@@ -168,7 +136,6 @@ class Socks5Server(
         udpSweepJob?.cancel()
         scope.cancel()
         runCatching { workerExecutor.shutdownNow() }
-        runCatching { dnsExecutor.shutdownNow() }
     }
 
     private suspend fun runTcpServer() {
@@ -205,8 +172,6 @@ class Socks5Server(
                 } catch (e: Exception) {
                     break
                 }
-                // Capture address/port/length synchronously: pkt is reused on
-                // the next receive, so async work must not read pkt afterwards.
                 val clientAddr = pkt.address
                 val clientPort = pkt.port
                 val dataCopy = buf.copyOf(pkt.length)
@@ -227,7 +192,6 @@ class Socks5Server(
             val input = DataInputStream(meteredIn)
             val output = DataOutputStream(meteredOut)
 
-            // greeting
             val version = input.readUnsignedByte()
             if (version != 0x05) {
                 client.close(); return
@@ -239,13 +203,11 @@ class Socks5Server(
             val methods = ByteArray(nmethods)
             input.readFully(methods) // throws EOF if the client lied about nmethods
             if (0x00.toByte() !in methods) {
-                // we only support no-auth; report and bail
                 output.writeByte(0x05); output.writeByte(0xff); output.flush()
                 client.close(); return
             }
             output.writeByte(0x05); output.writeByte(0x00); output.flush()
 
-            // request header
             val ver2 = input.readUnsignedByte()
             val cmd = input.readUnsignedByte()
             input.readUnsignedByte() // RSV
@@ -255,7 +217,7 @@ class Socks5Server(
             val (target, targetPort) = readTarget(input)
 
             when (cmd) {
-                0x01 -> handleConnect(client, input, output, target, targetPort)
+                0x01 -> handleConnect(client, input, output, target, targetPort, clientIp)
                 0x03 -> handleUdpAssociate(client, input, output)
                 else -> {
                     replyError(output, 0x07); client.close()
@@ -264,70 +226,15 @@ class Socks5Server(
         } catch (_: Exception) {
             runCatching { client.close() }
         } finally {
-            ClientUsage.add(clientIp, meteredIn.bytes() + meteredOut.bytes())
+            runCatching { client.close() }
         }
     }
 
     private fun resolve(host: String, net: Network?): List<InetAddress> {
-        // Resolve on the same network the upstream socket is bound to. The default
-        // resolver would query the WiFi-Direct interface (no DNS/internet) when the
-        // phone is the group owner, so the connection would fail to resolve the host.
-        val now = System.currentTimeMillis()
-        val cached = dnsCache[host]
-        if (cached != null && cached.second > now) return cached.first
-        // Resolve ONLY on the egress network the socket will be bound to. The
-        // default resolver would query the WiFi-Direct interface (no DNS/internet)
-        // when the Group Owner, producing an unreachable address.
-        val future = dnsExecutor.submit<List<InetAddress>> {
-            (if (net != null) net.getAllByName(host) else InetAddress.getAllByName(host))
-                ?.toList().orEmpty()
-        }
-        val addrs = try {
-            future.get(dnsTimeoutMs.toLong(), TimeUnit.MILLISECONDS)
-        } catch (e: TimeoutException) {
-            future.cancel(true)
-            throw IOException("DNS resolution timed out for $host on egress network $net", e)
-        } catch (e: Exception) {
-            future.cancel(true)
-            throw IOException("DNS resolution failed for $host on egress network $net", e)
-        }
-        if (addrs.isEmpty()) throw IOException("DNS resolution failed for $host on egress network $net")
-        // Try IPv4 first: carriers often have broken/blackholed IPv6 egress, so the
-        // first (IPv6) address can hang. Prefer IPv4 to avoid multi-second stalls.
-        val ordered = addrs.filter { it.address.size == 4 } + addrs.filter { it.address.size != 4 }
-        dnsCache[host] = ordered to (now + dnsTtlMs)
-        return ordered
+        return EgressManager.resolve(host, net)
     }
 
-    /**
-     * Cached outbound (cellular) network selection. [NetworkUtils.pickCellular]
-     * re-scans [ConnectivityManager.getAllNetworks] on every call, which is too
-     * expensive to run per UDP packet. We cache the resolved [Network] and only
-     * re-validate on a timer (~3s) so the hot path stays allocation/CM-call free.
-     */
-    private fun pickNet(): Network? {
-        val now = System.currentTimeMillis()
-        // Some OEMs (Honor/Huawei/Xiaomi) report a cellular Network with the
-        // INTERNET capability that nonetheless does not route - binding to it
-        // burns the full connect timeout before falling back. The system's own
-        // active network is what the phone itself successfully uses for its own
-        // traffic, so check it first on every call (cheap: one caps lookup).
-        val active = cm.activeNetwork
-        if (NetworkUtils.isValidEgress(cm, active)) {
-            if (cachedNet != active) { cachedNet = active; cachedNetTime = now }
-            return active
-        }
-        val cached = cachedNet
-        if (cached != null && now - cachedNetTime < 8000 && NetworkUtils.isValidEgress(cm, cached)) {
-            return cached
-        }
-        // Pass null as preferred so pickCellular applies its active-network-first
-        // logic instead of blindly reusing the (possibly dead) cellular binding.
-        val n = NetworkUtils.pickCellular(cm, null) ?: cached
-        cachedNet = n
-        cachedNetTime = now
-        return n
-    }
+    private fun pickNet(host: String? = null): Network? = EgressManager.pickNet(cm, host)
 
     private fun isValidCellular(n: Network?): Boolean {
         if (n == null) return false
@@ -341,18 +248,16 @@ class Socks5Server(
         input: DataInputStream,
         output: DataOutputStream,
         target: String,
-        targetPort: Int
+        targetPort: Int,
+        clientIp: String
     ) {
-        // Bound by [tcpSem] for the whole tunnel lifetime so a flood of long-lived
-        // TCP CONNECTs can never exhaust the slots needed by UDP relay loops
-        // (which use [udpSem]). The handshake in handleTcpClient runs unbound.
         tcpSem.withPermit {
             var upstream: Socket? = null
             tunnelCount.incrementAndGet()
             AppState.tcpTunnels.value = tunnelCount.get()
             val t0 = System.currentTimeMillis()
             try {
-                val net = pickNet()
+                val net = pickNet(target)
                 val addrs = withContext(proxyDispatcher) { resolve(target, net) }
                 var up: Socket? = null
                 var lastErr: String? = null
@@ -372,8 +277,6 @@ class Socks5Server(
                     }
                 }
                 if (up == null) {
-                    // Egress may have gone stale; retry once on a fresh network,
-                    // then once on the default route (mirrors HttpProxyServer tiers).
                     val fresh = NetworkUtils.pickCellular(cm, null)
                     if (fresh != null && fresh != net) {
                         val freshAddrs = runCatching { withContext(proxyDispatcher) { resolve(target, fresh) } }.getOrNull().orEmpty()
@@ -413,19 +316,27 @@ class Socks5Server(
                 }
                 if (up == null) throw IOException("could not connect to $target:$targetPort via $net : $lastErr")
                 upstream = up
+                EgressManager.reportSuccess(target)
                 replySuccess(output)
                 onLog("TCP $target:$targetPort")
                 val tx = AtomicLong(0L)
                 val rx = AtomicLong(0L)
                 val jobIn = scope.launch {
-                    try { tx.set(pump(input, up.getOutputStream())) } finally { runCatching { up.shutdownOutput() } }
+                    try { tx.set(pump(input, up.getOutputStream()) { n ->
+                        TrafficStats.addTx(n.toLong())
+                        ClientUsage.add(clientIp, n.toLong())
+                    }) } finally { runCatching { up.shutdownOutput() } }
                 }
                 val jobOut = scope.launch {
-                    try { rx.set(pump(up.getInputStream(), output)) } finally { runCatching { client.shutdownOutput() } }
+                    try { rx.set(pump(up.getInputStream(), output) { n ->
+                        TrafficStats.addRx(n.toLong())
+                        ClientUsage.add(clientIp, n.toLong())
+                    }) } finally { runCatching { client.shutdownOutput() } }
                 }
                 jobIn.join(); jobOut.join()
                 reportTunnel(target, targetPort, System.currentTimeMillis() - t0, tx.get(), rx.get())
             } catch (e: Exception) {
+                EgressManager.reportFailure(target)
                 onLog("TCP fail $target:$targetPort: ${e.message}")
                 runCatching { replyError(output, 0x05) }
             } finally {
@@ -438,7 +349,6 @@ class Socks5Server(
     }
 
     private suspend fun handleUdpAssociate(client: Socket, input: DataInputStream, output: DataOutputStream) {
-        // Send the UDP relay address: advertiseIp:port
         val relayAddr = InetAddress.getByName(advertiseIp)
         output.writeByte(0x05); output.writeByte(0x00); output.writeByte(0x00)
         output.writeByte(0x01) // IPv4
@@ -446,7 +356,6 @@ class Socks5Server(
         output.writeShort(port)
         output.flush()
         onLog("UDP associate from ${client.inetAddress.hostAddress}:${client.port}")
-        // keep the TCP connection open to signal end-of-session
         try {
             val b = ByteArray(1)
             input.read(b) // blocks until client closes
@@ -490,10 +399,7 @@ class Socks5Server(
             val payload = data.copyOfRange(idx + 2, data.size)
 
             val clientKey = "${clientAddr.hostAddress}:${clientPort}"
-            val net = pickNet()
-            // No computeIfAbsent: its mapping fn must not touch the map
-            // (recursive update crash) nor block on socket create/bind.
-            // Create outside, insert atomically with putIfAbsent.
+            val net = pickNet(dstHost)
             var sessionNow = udpSessions[clientKey]
             var isNew = false
             if (sessionNow == null) {
@@ -534,9 +440,12 @@ class Socks5Server(
                 val dstAddr = resolve(dstHost, net).first()
                 try {
                     session.socket.send(DatagramPacket(payload, payload.size, dstAddr, dstPort))
-                    session.tx += payload.size
+                    session.tx.addAndGet(payload.size.toLong())
+                    TrafficStats.addTx(payload.size.toLong())
+                    EgressManager.reportSuccess(dstHost)
                     ClientUsage.add(clientAddr.hostAddress ?: "", payload.size.toLong())
                 } catch (e: Exception) {
+                    EgressManager.reportFailure(dstHost)
                     onLog("UDP send fail $dstHost:$dstPort via $net: ${e.message}")
                 }
             } catch (e: Exception) {
@@ -594,7 +503,7 @@ class Socks5Server(
                 val src = pkt.address
                 val srcPort = pkt.port
                 val dataLen = pkt.length
-                session.rx += dataLen
+                session.rx.addAndGet(dataLen.toLong())
                 val ipBytes = src.address
                 if (ipBytes.size != 4) continue
                 System.arraycopy(ipBytes, 0, header, 4, 4)
@@ -605,6 +514,7 @@ class Socks5Server(
                 System.arraycopy(header, 0, response, 0, 10)
                 System.arraycopy(buf, 0, response, 10, dataLen)
                 relaySocket.send(DatagramPacket(response, total, clientAddr, clientPort))
+                TrafficStats.addRx(total.toLong())
                 ClientUsage.add(clientAddr.hostAddress ?: "", total.toLong())
             }
         } finally {
@@ -648,19 +558,13 @@ class Socks5Server(
         }
     }
 
-    /**
-     * Closed SOCKS5 TCP CONNECT tunnel accounting hook. Previously reported
-     * per-tunnel stats to telemetry; now a no-op kept so call sites stay
-     * untouched. [tx] is client->server (upload), [rx] server->client.
-     */
     private fun reportTunnel(target: String, targetPort: Int, dms: Long, tx: Long, rx: Long) {
     }
 
-    /** Closed UDP relay session accounting hook (no-op; telemetry removed). */
     private fun reportUdp(session: UdpSession) {
     }
 
-    private suspend fun pump(src: InputStream, dst: OutputStream): Long {
+    private suspend fun pump(src: InputStream, dst: OutputStream, onChunk: ((Int) -> Unit)? = null): Long {
         val buf = PUMP_BUF.get()
         var total = 0L
         try {
@@ -669,8 +573,7 @@ class Socks5Server(
                 if (n <= 0) break
                 dst.write(buf, 0, n)
                 total += n
-                // Only flush when we drained a read (likely end-of-stream or a
-                // short read); otherwise let TCP coalesce into full segments.
+                onChunk?.invoke(n)
                 if (n < buf.size) dst.flush()
             }
         } catch (e: Exception) {
@@ -680,8 +583,6 @@ class Socks5Server(
     }
 
     companion object {
-        // Reused across pump() calls on the same worker thread so concurrent
-        // tunnels don't each allocate a fresh 64KB buffer (GC churn under load).
         private val PUMP_BUF = ThreadLocal.withInitial { ByteArray(131072) }
     }
 }
