@@ -65,7 +65,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          latest=$(gh release list --json tagName -q '.[].tagName' | grep -v nightly | sort -V | tail -1)
+          latest=$(gh release list --json tagName -q '.[].tagName' | sort -V | tail -1)
           if [ -z "$latest" ]; then
             latest="v0.0"
           fi
