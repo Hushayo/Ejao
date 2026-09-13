@@ -47,7 +47,10 @@ data class AppConfig(
     // Defaults to panelPort + 1 (8284) when not explicitly set.
     val backupPanelPort: Int = 8284,
     // Hours between background update checks; 0 = disabled. Default 6h.
-    val updateCheckIntervalHours: Int = 6
+    val updateCheckIntervalHours: Int = 6,
+    // Update channel: "stable" (default, normal releases only) or "beta"
+    // (networkingpatch test builds only). Toggled in the app's second tab.
+    val updateChannel: String = "stable"
 ) {
     fun effectiveMode(): String {
         return when (proxyType) {
@@ -222,7 +225,10 @@ object ConfigManager {
                         ?: (panel + 1).coerceIn(1, 65535)
                 },
                 updateCheckIntervalHours = p.getProperty("update_check_interval_hours", defaultConfig.updateCheckIntervalHours.toString()).toIntOrNull()?.coerceIn(0, 24)
-                    ?: defaultConfig.updateCheckIntervalHours
+                    ?: defaultConfig.updateCheckIntervalHours,
+                updateChannel = p.getProperty("update_channel", defaultConfig.updateChannel)
+                    .ifBlank { defaultConfig.updateChannel }
+                    .let { if (it == "beta") "beta" else "stable" }
             )
         } catch (_: Exception) {
             defaultConfig
@@ -253,7 +259,8 @@ object ConfigManager {
             "auto_restart_on_wifi_return=${config.autoRestartOnWifiReturn}",
             "panel_port=${config.panelPort}",
             "backup_panel_port=${config.backupPanelPort}",
-            "update_check_interval_hours=${config.updateCheckIntervalHours}"
+            "update_check_interval_hours=${config.updateCheckIntervalHours}",
+            "update_channel=${config.updateChannel}"
         )
         val text = lines.joinToString("\n") + "\n"
         // Atomic write: tmp + rename avoids torn reads on crash/kill.
