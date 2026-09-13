@@ -60,6 +60,9 @@ jobs:
       - name: Make wrapper executable
         run: chmod +x src/gradle-stuff/gradlew
 
+      - name: Run unit tests
+        run: cd src/gradle-stuff && ./gradlew test --no-daemon
+
       - name: Compute next free release tag
         id: tag
         env:
