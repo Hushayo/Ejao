@@ -378,7 +378,7 @@ class PanelServer(
         </head><body>
         <div class="wrap">
         <header class="topbar">
-            <span class="mark">S</span>
+            <span class="mark">E</span>
             <div style="line-height:1.15"><div class="brand-name">EJAO</div><div class="brand-sub">control panel</div></div>
             <span class="ver">v${BuildConfig.VERSION_NAME}</span>
             <span style="margin-left:auto;display:flex;gap:8px">
