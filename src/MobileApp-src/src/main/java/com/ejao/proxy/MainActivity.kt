@@ -861,7 +861,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun openWiki() {
         try {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/mjoohos23/Ejao/wiki")))
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/Hushayo/Ejao/wiki")))
         } catch (e: Exception) {
             Log.e(TAG, "open wiki failed", e)
             runCatching {

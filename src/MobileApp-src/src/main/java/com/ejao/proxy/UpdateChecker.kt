@@ -23,8 +23,8 @@ import java.util.concurrent.TimeUnit
  * install. This mirrors what a manual check does, minus the auto-launch.
  */
 object UpdateChecker {
-    private const val REPO_LATEST = "https://api.github.com/repos/mjoohos23/Ejao/releases/latest"
-    private const val REPO_LIST = "https://api.github.com/repos/mjoohos23/Ejao/releases?per_page=30"
+    private const val REPO_LATEST = "https://api.github.com/repos/Hushayo/Ejao/releases/latest"
+    private const val REPO_LIST = "https://api.github.com/repos/Hushayo/Ejao/releases?per_page=30"
     private const val WORK_NAME = "ejao_update_check"
 
     /**
@@ -127,7 +127,7 @@ object UpdateChecker {
             val dir = File(base, "updates")
             if (!dir.exists()) dir.mkdirs()
             val file = File(dir, "ejao.apk")
-            val conn = URL("https://github.com/mjoohos23/Ejao/releases/download/$tag/ejao.apk")
+            val conn = URL("https://github.com/Hushayo/Ejao/releases/download/$tag/ejao.apk")
                 .openConnection() as HttpURLConnection
             conn.requestMethod = "GET"
             conn.setRequestProperty("User-Agent", "Ejao-App")

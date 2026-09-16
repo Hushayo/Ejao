@@ -1,7 +1,7 @@
 <resources>
     <string name="app_name">Ejao</string>
     <string name="help">Full setup guide, PC client config and troubleshooting are on the
-GitHub Wiki: github.com/mjoohos23/Ejao/wiki
+GitHub Wiki: github.com/Hushayo/Ejao/wiki
 
 Short version:
 1. START proxy - the app becomes a WiFi Direct hotspot.

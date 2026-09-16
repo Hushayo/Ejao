@@ -68,7 +68,7 @@ jobs:
         timeout-minutes: 300
         with:
           secret: ${{ github.token }}
-          approvers: mjoohos23
+          approvers: Hushayo
           minimum-approvals: 1
           issue-title: "Ejao debug compile - confirm result"
           issue-body: "The debug compile finished. Check the run logs / artifacts, then comment to approve or deny. If no response within 5 hours this job times out."

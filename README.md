@@ -4,9 +4,9 @@
   <img src="src/MobileApp-src/src/main/res/drawable-nodpi/ic_launcher_legacy.png" width="108" height="108" alt="Ejao launcher icon">
 </p>
 
-![Latest release](https://img.shields.io/github/v/release/mjoohos23/Ejao)
-![CI build](https://img.shields.io/github/actions/workflow/status/mjoohos23/Ejao/build.yml?label=CI%20build)
-![License](https://img.shields.io/github/license/mjoohos23/Ejao)
+![Latest release](https://img.shields.io/github/v/release/Hushayo/Ejao)
+![CI build](https://img.shields.io/github/actions/workflow/status/Hushayo/Ejao/build.yml?label=CI%20build)
+![License](https://img.shields.io/github/license/Hushayo/Ejao)
 
 > [!NOTE]
 > **STABLE** for its core use case: a systemwide TCP+UDP proxy over a WiFi
@@ -26,7 +26,7 @@ connection — UDP included.
    battery-exemption + autostart shortcuts)
 
 Full setup guide, config reference and keep-alive details live in the
-**[wiki](https://github.com/mjoohos23/Ejao/wiki)**.
+**[wiki](https://github.com/Hushayo/Ejao/wiki)**.
 
 ## Limitations
 
@@ -40,7 +40,7 @@ Full setup guide, config reference and keep-alive details live in the
   relay. Fall back to TCP when UDP misbehaves.
 - **SOCKS4 needs 4a:** enable remote hostname resolving (SOCKS4a) in the
   client or hostnames won't resolve. Details on the
-  [wiki](https://github.com/mjoohos23/Ejao/wiki/PC-Client#option-3--socks4--socks4a-legacy-clients-tcp-only).
+  [wiki](https://github.com/Hushayo/Ejao/wiki/PC-Client#option-3--socks4--socks4a-legacy-clients-tcp-only).
 
 ## Building
 
