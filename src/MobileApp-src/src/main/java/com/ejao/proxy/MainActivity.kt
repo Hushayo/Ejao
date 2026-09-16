@@ -86,7 +86,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tilUpdateCheckInterval: com.google.android.material.textfield.TextInputLayout
     private lateinit var etUpdateCheckInterval: AutoCompleteTextView
     private lateinit var swAutoUpdate: SwitchMaterial
-    private lateinit var swBetaUpdates: SwitchMaterial
 
     private val saveHandler = Handler(Looper.getMainLooper())
     private val autosaveRunnable = Runnable { autosave() }
@@ -156,29 +155,6 @@ class MainActivity : AppCompatActivity() {
                 Log.e(TAG, "auto-update toggle failed", e)
             }
         }
-        swBetaUpdates = findViewById(R.id.swBetaUpdates)
-        swBetaUpdates.isChecked = config.updateChannel == "beta"
-        swBetaUpdates.setOnCheckedChangeListener { _, isChecked ->
-            try {
-                // Switching channels invalidates any pending update from the
-                // other channel so it can never be installed by mistake.
-                AppState.updateAvailable.value = null
-                runCatching {
-                    val f = UpdateChecker.downloadedApkFile(this)
-                    if (f.exists()) f.delete()
-                }
-                autosave()
-                runCatching {
-                    tvUpdateStatus.text = if (isChecked) {
-                        "Beta channel - you'll get networking test builds only (${BuildConfig.VERSION_NAME})."
-                    } else {
-                        "Stable channel - you'll get normal releases only (${BuildConfig.VERSION_NAME})."
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "beta toggle failed", e)
-            }
-        }
         etKeepaliveUrl.setText(config.keepaliveUrl)
         etKeepaliveInterval.setText((config.keepaliveIntervalMs / 1000).toString())
         chkRequireApprovalRestart.isChecked = config.requireApprovalRestart
@@ -241,11 +217,7 @@ class MainActivity : AppCompatActivity() {
 
         btnCheckUpdate = findViewById(R.id.btnCheckUpdate)
         tvUpdateStatus = findViewById(R.id.tvUpdateStatus)
-        tvUpdateStatus.text = if (config.updateChannel == "beta") {
-            "Beta channel - test builds only. You're running ${BuildConfig.VERSION_NAME}."
-        } else {
-            "Stable channel - normal releases only. You're running ${BuildConfig.VERSION_NAME}."
-        }
+        tvUpdateStatus.text = "You're running ${BuildConfig.VERSION_NAME}."
         btnCheckUpdate.setOnClickListener {
             runCatching {
                 val ready = AppState.updateAvailable.value
@@ -599,7 +571,6 @@ class MainActivity : AppCompatActivity() {
             }
             val band = BAND_VALUES.getOrElse(BAND_LABELS.indexOf(etBand.text.toString())) { "2.4" }
             val updateCheckIntervalHours = chosenUpdateIntervalHours()
-            val updateChannel = if (runCatching { swBetaUpdates.isChecked }.getOrDefault(false)) "beta" else "stable"
         if (pass.length !in 8..63) {
             tvSaved.setTextColor(0xFFC62828.toInt())
             tvSaved.text = "Password must be 8-63 characters - not saved yet"
@@ -643,8 +614,7 @@ class MainActivity : AppCompatActivity() {
                 disableBandSelector = chkDisableBandSelector.isChecked,
                 keepRetryingReform = chkKeepRetryingReform.isChecked,
                 autoRestartOnWifiReturn = chkAutoRestartOnWifiReturn.isChecked,
-                updateCheckIntervalHours = updateCheckIntervalHours,
-                updateChannel = updateChannel
+                updateCheckIntervalHours = updateCheckIntervalHours
             )
         )
         tvSaved.setTextColor(0xFF2E7D32.toInt())
@@ -764,23 +734,17 @@ class MainActivity : AppCompatActivity() {
     private fun checkForUpdate() {
         if (updateInProgress) return
         updateInProgress = true
-        val channel = runCatching { ConfigManager.load(this).updateChannel }.getOrDefault("stable")
-        val channelLabel = if (channel == "beta") "beta" else "stable"
         runCatching { btnCheckUpdate.isEnabled = false }
-        runCatching { tvUpdateStatus.text = "Checking for $channelLabel updates..." }
+        runCatching { tvUpdateStatus.text = "Checking for updates..." }
         lifecycleScope.launch {
             try {
-                val latest = withContext(Dispatchers.IO) { runCatching { UpdateChecker.fetchLatestTag(channel) }.getOrNull() }
+                val latest = withContext(Dispatchers.IO) { runCatching { UpdateChecker.fetchLatestTag() }.getOrNull() }
                 when {
                     latest == null -> {
-                        tvUpdateStatus.text = if (channel == "beta") {
-                            "No beta builds found yet. Try again later."
-                        } else {
-                            "Couldn't reach the update server. Try again later."
-                        }
+                        tvUpdateStatus.text = "Couldn't reach the update server. Try again later."
                     }
-                    runCatching { !UpdateChecker.isNewer(latest, BuildConfig.VERSION_NAME, channel) }.getOrDefault(false) -> {
-                        tvUpdateStatus.text = "You're on the latest $channelLabel version (${BuildConfig.VERSION_NAME})."
+                    runCatching { !UpdateChecker.isNewer(latest, BuildConfig.VERSION_NAME) }.getOrDefault(false) -> {
+                        tvUpdateStatus.text = "You're on the latest version (${BuildConfig.VERSION_NAME})."
                         AppState.updateAvailable.value = null
                     }
                     else -> {

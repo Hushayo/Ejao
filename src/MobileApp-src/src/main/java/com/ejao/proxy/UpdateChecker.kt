@@ -24,7 +24,6 @@ import java.util.concurrent.TimeUnit
  */
 object UpdateChecker {
     private const val REPO_LATEST = "https://api.github.com/repos/Hushayo/Ejao/releases/latest"
-    private const val REPO_LIST = "https://api.github.com/repos/Hushayo/Ejao/releases?per_page=30"
     private const val WORK_NAME = "ejao_update_check"
 
     /**
@@ -55,17 +54,10 @@ object UpdateChecker {
         }
     }
 
-    /** Stable channel: latest normal release (GitHub excludes pre-releases). */
-    fun fetchLatestTag(): String? = fetchLatestTag("stable")
-
-    /**
-     * Channel-aware latest tag.
-     * - "stable": latest normal release only (no betas, no nightlies).
-     * - "beta": latest networkingpatch test build only (no stable).
-     */
-    fun fetchLatestTag(channel: String): String? {
+    /** Latest normal release (GitHub excludes pre-releases). */
+    fun fetchLatestTag(): String? {
         return try {
-            if (channel == "beta") fetchLatestBetaTag() else fetchLatestStableTag()
+            fetchLatestStableTag()
         } catch (_: Exception) {
             null
         }
@@ -83,35 +75,6 @@ object UpdateChecker {
                 val body = conn.inputStream.bufferedReader().use { it.readText() }
                 val m = Regex(""""tag_name"\s*:\s*"([^"]+)"""").find(body) ?: return null
                 m.groupValues[1]
-            } finally {
-                runCatching { conn.disconnect() }
-            }
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    private fun fetchLatestBetaTag(): String? {
-        return try {
-            val conn = URL(REPO_LIST).openConnection() as HttpURLConnection
-            conn.requestMethod = "GET"
-            conn.setRequestProperty("User-Agent", "Ejao-App")
-            conn.connectTimeout = 10000
-            conn.readTimeout = 10000
-            try {
-                if (conn.responseCode != 200) return null
-                val body = conn.inputStream.bufferedReader().use { it.readText() }
-                // The list endpoint returns newest first. Split into per-release
-                // chunks and take the first whose tag is a networkingpatch beta.
-                // Stable releases and nightlies are skipped on this channel.
-                val chunks = body.split("\"tag_name\"").drop(1)
-                for (chunk in chunks) {
-                    val tag = Regex("""\s*:\s*"([^"]+)"""").find(chunk)?.groupValues?.get(1) ?: continue
-                    if ("networkingpatch" !in tag) continue
-                    if (Regex(""""draft"\s*:\s*true""").containsMatchIn(chunk)) continue
-                    return tag
-                }
-                null
             } finally {
                 runCatching { conn.disconnect() }
             }
@@ -176,28 +139,16 @@ object UpdateChecker {
         return a to b
     }
 
-    fun isNewer(latest: String, current: String): Boolean {
-        return isNewer(latest, current, "stable")
-    }
-
     /**
-     * Channel-aware newness check.
-     * Stable: pure version-number compare (unchanged behavior).
-     * Beta: version compare, plus same-base beta counts as newer when the
-     * user is on a stable build (so vX.XX-networkingpatch is offered to
-     * someone running stable vX.XX). Already-on-beta/nightly/patch builds
-     * with the same numbers are NOT "newer" - avoids a re-download loop,
-     * since the installed version name never literally equals the tag.
+     * True when [latest] is a higher version than [current].
+     * Pure version-number compare on major.minor.
      */
-    fun isNewer(latest: String, current: String, channel: String): Boolean {
+    fun isNewer(latest: String, current: String): Boolean {
         val a = parseVersion(latest) ?: return false
         val b = parseVersion(current) ?: return false
         if (a.first != b.first) return a.first > b.first
         if (a.second != b.second) return a.second > b.second
-        if (channel != "beta") return false
-        if ("networkingpatch" !in latest) return false
-        val cur = current.lowercase()
-        return "patch" !in cur && "nightly" !in cur && "beta" !in cur
+        return false
     }
 }
 
@@ -211,9 +162,8 @@ object UpdateChecker {
 class UpdateWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         return try {
-            val channel = runCatching { ConfigManager.load(applicationContext).updateChannel }.getOrDefault("stable")
-            val latest = UpdateChecker.fetchLatestTag(channel) ?: return Result.retry()
-            if (!UpdateChecker.isNewer(latest, BuildConfig.VERSION_NAME, channel)) {
+            val latest = UpdateChecker.fetchLatestTag() ?: return Result.retry()
+            if (!UpdateChecker.isNewer(latest, BuildConfig.VERSION_NAME)) {
                 AppState.updateAvailable.value = null
                 return Result.success()
             }
