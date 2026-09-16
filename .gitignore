@@ -9,14 +9,14 @@ captures/
 .cxx/
 .env
 src/tools/
-!src/tools/singbox/SacramConnect.bat
+!src/tools/singbox/EjaoConnect.bat
 !src/tools/singbox/detect.ps1
 !src/tools/singbox/config.json
 WORKFLOW.md
 
 # Wiki is a separate repo; don't track it here
-Sacram.wiki/
+Ejao.wiki/
 
 # Local signing keystore (secret is in CI; never commit the key)
 *.jks
-sacram-release-key.jks
+ejao-release-key.jks

@@ -1,5 +1,5 @@
 <resources>
-    <style name="Theme.Sacram" parent="Theme.Material3.Dark.NoActionBar">
+    <style name="Theme.Ejao" parent="Theme.Material3.Dark.NoActionBar">
         <item name="colorPrimary">@color/primary</item>
         <item name="colorOnPrimary">@color/on_primary</item>
         <item name="colorSecondary">@color/accent</item>
@@ -12,7 +12,7 @@
         <item name="android:textColorHint">#A8A29E</item>
 
         <!-- Outlined text fields get the accent stroke + rounded corners -->
-        <item name="textInputStyle">@style/Widget.Sacram.TextInputLayout</item>
+        <item name="textInputStyle">@style/Widget.Ejao.TextInputLayout</item>
 
         <item name="android:windowBackground">@color/bg</item>
         <item name="android:colorBackground">@color/bg</item>
@@ -21,7 +21,7 @@
         <item name="android:buttonCornerRadius">12dp</item>
     </style>
 
-    <style name="Widget.Sacram.TextInputLayout" parent="Widget.MaterialComponents.TextInputLayout.OutlinedBox">
+    <style name="Widget.Ejao.TextInputLayout" parent="Widget.MaterialComponents.TextInputLayout.OutlinedBox">
         <item name="boxStrokeColor">@color/accent</item>
         <item name="hintTextColor">@color/accent</item>
         <item name="boxStrokeWidthFocused">2dp</item>

@@ -1,4 +1,4 @@
-package com.sacram.proxy
+package com.ejao.proxy
 
 import android.app.AlarmManager
 import android.app.Notification
@@ -32,11 +32,11 @@ import java.util.concurrent.atomic.AtomicInteger
 class ProxyService : Service() {
 
     companion object {
-        const val CHANNEL_ID = "sacram_proxy"
+        const val CHANNEL_ID = "ejao_proxy"
         const val NOTIF_ID = 1
-        const val ACTION_START = "com.sacram.proxy.START"
-        const val ACTION_STOP = "com.sacram.proxy.STOP"
-        private const val TAG = "SacramService"
+        const val ACTION_START = "com.ejao.proxy.START"
+        const val ACTION_STOP = "com.ejao.proxy.STOP"
+        private const val TAG = "EjaoService"
         private const val WATCHDOG_REQ = 7
         private const val WATCHDOG_INTERVAL_MS = 60_000L
 
@@ -727,14 +727,14 @@ class ProxyService : Service() {
         try {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
             wakeLock = runCatching {
-                pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Sacram:proxy").apply {
+                pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Ejao:proxy").apply {
                     setReferenceCounted(false)
                     acquire(10 * 60 * 60 * 1000L)
                 }
             }.getOrNull()
             val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
             wifiLock = runCatching {
-                wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Sacram:wifi").apply {
+                wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Ejao:wifi").apply {
                     setReferenceCounted(false)
                     acquire()
                 }
@@ -763,7 +763,7 @@ class ProxyService : Service() {
     private fun createChannel() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val channel = NotificationChannel(
-            CHANNEL_ID, "Sacram Proxy", NotificationManager.IMPORTANCE_MIN
+            CHANNEL_ID, "Ejao Proxy", NotificationManager.IMPORTANCE_MIN
         ).apply {
             description = "Keeps the WiFi Direct UDP proxy alive"
         }
@@ -783,7 +783,7 @@ class ProxyService : Service() {
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_s)
-            .setContentTitle("Sacram UDP Proxy")
+            .setContentTitle("Ejao UDP Proxy")
             .setContentText("Running - see app for connection details")
             .setContentIntent(contentIntent)
             .setOngoing(true)
@@ -805,7 +805,7 @@ class ProxyService : Service() {
         else "$ssid | $ip:$socksPort | pass: $pass"
         val notif = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_s)
-            .setContentTitle("Sacram UDP Proxy - RUNNING")
+            .setContentTitle("Ejao UDP Proxy - RUNNING")
             .setContentText(summary)
             .setStyle(NotificationCompat.BigTextStyle().bigText(detail))
             .setContentIntent(PendingIntent.getActivity(

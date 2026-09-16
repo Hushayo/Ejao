@@ -1,9 +1,9 @@
-package com.sacram.proxy
+package com.ejao.proxy
 
 import android.content.Context
 
 object ProxyState {
-    private const val PREFS = "sacram_state"
+    private const val PREFS = "ejao_state"
     private const val KEY_SHOULD_RUN = "should_run"
 
     fun shouldRun(context: Context): Boolean =

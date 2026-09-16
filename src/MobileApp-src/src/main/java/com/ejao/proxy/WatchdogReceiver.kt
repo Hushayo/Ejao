@@ -1,4 +1,4 @@
-package com.sacram.proxy
+package com.ejao.proxy
 
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -17,7 +17,7 @@ class WatchdogReceiver : BroadcastReceiver() {
         } catch (e: Exception) {
             // OS background-start limits may block this; shouldRun stays true
             // so the next manual launch recovers.
-            Log.w("SacramWatchdog", "background start blocked: ${e.message}")
+            Log.w("EjaoWatchdog", "background start blocked: ${e.message}")
         }
     }
 }

@@ -1,4 +1,4 @@
-package com.sacram.proxy
+package com.ejao.proxy
 
 import android.net.ConnectivityManager
 import android.net.Network

@@ -1,12 +1,12 @@
-# Sacram
+# Ejao
 
 <p align="center">
-  <img src="src/MobileApp-src/src/main/res/drawable-nodpi/ic_launcher_legacy.png" width="108" height="108" alt="Sacram launcher icon">
+  <img src="src/MobileApp-src/src/main/res/drawable-nodpi/ic_launcher_legacy.png" width="108" height="108" alt="Ejao launcher icon">
 </p>
 
-![Latest release](https://img.shields.io/github/v/release/SynacNipo/Sacram)
-![CI build](https://img.shields.io/github/actions/workflow/status/SynacNipo/Sacram/build.yml?label=CI%20build)
-![License](https://img.shields.io/github/license/SynacNipo/Sacram)
+![Latest release](https://img.shields.io/github/v/release/mjoohos23/Ejao)
+![CI build](https://img.shields.io/github/actions/workflow/status/mjoohos23/Ejao/build.yml?label=CI%20build)
+![License](https://img.shields.io/github/license/mjoohos23/Ejao)
 
 > [!NOTE]
 > **STABLE** for its core use case: a systemwide TCP+UDP proxy over a WiFi
@@ -26,7 +26,7 @@ connection — UDP included.
    battery-exemption + autostart shortcuts)
 
 Full setup guide, config reference and keep-alive details live in the
-**[wiki](https://github.com/SynacNipo/Sacram/wiki)**.
+**[wiki](https://github.com/mjoohos23/Ejao/wiki)**.
 
 ## Limitations
 
@@ -40,10 +40,10 @@ Full setup guide, config reference and keep-alive details live in the
   relay. Fall back to TCP when UDP misbehaves.
 - **SOCKS4 needs 4a:** enable remote hostname resolving (SOCKS4a) in the
   client or hostnames won't resolve. Details on the
-  [wiki](https://github.com/SynacNipo/Sacram/wiki/PC-Client#socks4--socks4a-legacy-clients).
+  [wiki](https://github.com/mjoohos23/Ejao/wiki/PC-Client#socks4--socks4a-legacy-clients).
 
 ## Building
 
 CI only — pushing to `main` with `[Trigger]` in the commit message builds
-and publishes the next versioned release (`sacram.apk`). Plain commits are
+and publishes the next versioned release (`ejao.apk`). Plain commits are
 gated and never build.

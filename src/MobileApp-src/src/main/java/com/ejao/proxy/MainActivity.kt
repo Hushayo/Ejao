@@ -1,4 +1,4 @@
-package com.sacram.proxy
+package com.ejao.proxy
 
 import android.Manifest
 import android.content.Context
@@ -46,7 +46,7 @@ import java.io.File
 class MainActivity : AppCompatActivity() {
 
     private companion object {
-        const val TAG = "SacramMain"
+        const val TAG = "EjaoMain"
         val PROXY_TYPE_LABELS = listOf(
             "Auto (SOCKS5 + HTTP)"
         )
@@ -504,7 +504,7 @@ class MainActivity : AppCompatActivity() {
                     eggTaps = 0
                     Toast.makeText(
                         this,
-                        "\uD83D\uDEF0 You found the Sacram easter egg - stay proxy, my friend.",
+                        "\uD83D\uDEF0 You found the Ejao easter egg - stay proxy, my friend.",
                         Toast.LENGTH_LONG
                     ).show()
                 }
@@ -861,7 +861,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun openWiki() {
         try {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/SynacNipo/Sacram/wiki")))
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/mjoohos23/Ejao/wiki")))
         } catch (e: Exception) {
             Log.e(TAG, "open wiki failed", e)
             runCatching {
@@ -885,7 +885,7 @@ class MainActivity : AppCompatActivity() {
                 } catch (_: Exception) {
                 }
             }
-            Toast.makeText(this, "Open Settings > Apps > Sacram and enable Autostart", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Open Settings > Apps > Ejao and enable Autostart", Toast.LENGTH_LONG).show()
         } catch (e: Exception) {
             Log.e(TAG, "open autostart failed", e)
             runCatching {

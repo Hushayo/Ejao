@@ -1,4 +1,4 @@
-package com.sacram.proxy
+package com.ejao.proxy
 
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -17,7 +17,7 @@ class BootReceiver : BroadcastReceiver() {
         } catch (e: Exception) {
             // OS background-start limits (Android 8+/12+) may block this;
             // keep shouldRun=true so the next manual launch recovers.
-            Log.w("SacramBoot", "background start blocked: ${e.message}")
+            Log.w("EjaoBoot", "background start blocked: ${e.message}")
         }
     }
 }

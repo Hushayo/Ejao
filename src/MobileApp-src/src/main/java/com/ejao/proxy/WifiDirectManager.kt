@@ -1,4 +1,4 @@
-package com.sacram.proxy
+package com.ejao.proxy
 
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -39,7 +39,7 @@ class WifiDirectManager(private val context: Context) {
         // is always a valid WiFi Direct network name.
         val body = s.map { c ->
             if (c.isLetterOrDigit() || c == '-') c.uppercaseChar() else 'A'
-        }.joinToString("").ifEmpty { "SacramAP" }
+        }.joinToString("").ifEmpty { "EjaoAP" }
         // Android requires "DIRECT-xy" where x,y are the first two alphanumeric
         // chars. Use the code exactly once, then the remainder of the body, so the
         // prefix never overlaps/duplicates the name. SSID is capped at 32 octets.

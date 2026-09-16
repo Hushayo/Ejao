@@ -1,4 +1,4 @@
-package com.sacram.proxy
+package com.ejao.proxy
 
 import android.content.Context
 import kotlinx.coroutines.CoroutineScope
@@ -276,7 +276,7 @@ class BackupPanelServer(
     private fun restartRequestedHtml(): String {
         return """
         <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-        <title>Sacram Backup Panel</title>
+        <title>Ejao Backup Panel</title>
         ${style()}
         </head><body><div class="wrap">
         <section class="card" style="text-align:center;padding:32px 16px">
@@ -303,12 +303,12 @@ class BackupPanelServer(
             "<span class=\"pill pill-bad\">WIFI DIRECT DOWN</span>"
         return """
         <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-        <title>Sacram Backup Panel</title>
+        <title>Ejao Backup Panel</title>
         ${style()}
         </head><body>
         <div class="wrap">
         <header class="topbar">
-            <div class="brand"><span class="dot" id="v-dot"></span><span class="brand-name">SACRAM</span><span class="brand-sub">backup panel</span></div>
+            <div class="brand"><span class="dot" id="v-dot"></span><span class="brand-name">EJAO</span><span class="brand-sub">backup panel</span></div>
             <div class="ver">:${actualPort}</div>
         </header>
 
@@ -341,10 +341,10 @@ class BackupPanelServer(
             <div class="log" id="v-log"><div class="log-line">${escapeHtml(s.status.ifEmpty { "starting..." })}</div></div>
         </section>
 
-        <footer class="foot">Sacram &mdash; backup panel, stays up when the proxy goes down</footer>
+        <footer class="foot">Ejao &mdash; backup panel, stays up when the proxy goes down</footer>
         </div>
         <script>
-        async function sacramRefresh(){
+        async function ejaoRefresh(){
           try{
             var r=await fetch('/api/health',{cache:'no-store'});
             var d=await r.json();
@@ -357,8 +357,8 @@ class BackupPanelServer(
             if(log&&d.status){log.textContent=d.status;}
           }catch(e){}
         }
-        sacramRefresh();
-        setInterval(sacramRefresh,5000);
+        ejaoRefresh();
+        setInterval(ejaoRefresh,5000);
         </script>
         </body></html>
         """.trimIndent()

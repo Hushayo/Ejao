@@ -1,4 +1,4 @@
-package com.sacram.proxy
+package com.ejao.proxy
 
 import android.content.Context
 import kotlinx.coroutines.CoroutineScope
@@ -241,12 +241,12 @@ class PanelServer(
     private fun restartRequestedHtml(): String {
         val cfg = ConfigManager.load(context)
         val msg = if (cfg.requireApprovalRestart)
-            "Restart is waiting for the phone owner to approve it <b>inside the Sacram app</b> (10 second window)."
+            "Restart is waiting for the phone owner to approve it <b>inside the Ejao app</b> (10 second window)."
         else
             "Restarting the proxy + hotspot now. The panel will come back online in a few seconds."
         return """
         <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-        <title>Sacram Panel</title>
+        <title>Ejao Panel</title>
         ${panelStyle()}
         </head><body><div class="wrap">
         <section class="card" style="text-align:center;padding:32px 16px">
@@ -270,13 +270,13 @@ class PanelServer(
 
     private fun pendingPageHtml(): String = """
         <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-        <title>Sacram Panel</title>
+        <title>Ejao Panel</title>
         ${panelStyle()}
         </head><body><div class="wrap">
         <section class="card" style="text-align:center;padding:32px 16px">
             <div class="card-head" style="margin-bottom:8px">Settings</div>
             <h1 style="font-size:18px;margin:0 0 10px">Change requested</h1>
-            <p class="note" style="font-size:13px;color:var(--text-dim)">The requested settings change is waiting for the phone owner to approve it inside the Sacram app (10 second window).</p>
+            <p class="note" style="font-size:13px;color:var(--text-dim)">The requested settings change is waiting for the phone owner to approve it inside the Ejao app (10 second window).</p>
             <p class="note" style="font-size:13px;color:var(--text-dim)">If the owner ignores or denies it, nothing changes.</p>
             <a href="/" class="btn" style="display:block;text-decoration:none;text-align:center;box-sizing:border-box">Back to panel</a>
         </section>
@@ -285,7 +285,7 @@ class PanelServer(
 
     private fun savedPageHtml(): String = """
         <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-        <title>Sacram Panel</title>
+        <title>Ejao Panel</title>
         ${panelStyle()}
         </head><body><div class="wrap">
         <section class="card" style="text-align:center;padding:32px 16px">
@@ -373,16 +373,16 @@ class PanelServer(
             "Restarts the proxy + hotspot immediately (no approval). Enable \"Require approval for panel restart\" in the app's Keep-Alive tab to gate it."
         return """
         <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-        <title>Sacram Panel</title>
+        <title>Ejao Panel</title>
         ${panelStyle()}
         </head><body>
         <div class="wrap">
         <header class="topbar">
             <span class="mark">S</span>
-            <div style="line-height:1.15"><div class="brand-name">SACRAM</div><div class="brand-sub">control panel</div></div>
+            <div style="line-height:1.15"><div class="brand-name">EJAO</div><div class="brand-sub">control panel</div></div>
             <span class="ver">v${BuildConfig.VERSION_NAME}</span>
             <span style="margin-left:auto;display:flex;gap:8px">
-              <button class="icon-btn" id="theme-btn" type="button" onclick="sacramTheme()">Dark</button>
+              <button class="icon-btn" id="theme-btn" type="button" onclick="ejaoTheme()">Dark</button>
             </span>
         </header>
 
@@ -400,8 +400,8 @@ class PanelServer(
         <form method="post" action="/">
         <section class="card">
             <div class="card-head"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><path d="M12 20h.01"/></svg>Wi-Fi Direct</div>
-            <div class="kv"><div><div class="kv-k">SSID</div><div class="kv-v" id="v-ssid">${escapeHtml(info.ssid)}</div></div><button class="mini-btn" type="button" data-copy="${escapeHtml(info.ssid)}" onclick="sacramCopy(this,this.getAttribute('data-copy'))">Copy</button></div>
-            <div class="kv"><div><div class="kv-k">Password</div><div class="kv-v" id="v-pass" data-real="${escapeHtml(info.passphrase)}">&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;</div></div><span style="display:flex;gap:6px"><button class="mini-btn" type="button" onclick="sacramPw()">Show</button><button class="mini-btn" type="button" onclick="sacramCopyPass(this)">Copy</button></span></div>
+            <div class="kv"><div><div class="kv-k">SSID</div><div class="kv-v" id="v-ssid">${escapeHtml(info.ssid)}</div></div><button class="mini-btn" type="button" data-copy="${escapeHtml(info.ssid)}" onclick="ejaoCopy(this,this.getAttribute('data-copy'))">Copy</button></div>
+            <div class="kv"><div><div class="kv-k">Password</div><div class="kv-v" id="v-pass" data-real="${escapeHtml(info.passphrase)}">&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;</div></div><span style="display:flex;gap:6px"><button class="mini-btn" type="button" onclick="ejaoPw()">Show</button><button class="mini-btn" type="button" onclick="ejaoCopyPass(this)">Copy</button></span></div>
             <span class="field-label">Band</span>
             <div class="seg">
                 <label><input type="radio" name="band" value="2.4" $band24><span>2.4 GHz</span></label>
@@ -442,54 +442,54 @@ class PanelServer(
             </section>
         </form>
 
-        <footer class="foot">Sacram &mdash; local control panel, no external access</footer>
+        <footer class="foot">Ejao &mdash; local control panel, no external access</footer>
         </div>
         <script>
-        try{var t=localStorage.getItem('sacram-theme');if(!t&&window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches)t='dark';if(t==='dark'){document.documentElement.setAttribute('data-theme','dark');}}catch(e){}
-        function sacramTheme(){
+        try{var t=localStorage.getItem('ejao-theme');if(!t&&window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches)t='dark';if(t==='dark'){document.documentElement.setAttribute('data-theme','dark');}}catch(e){}
+        function ejaoTheme(){
           var el=document.documentElement;
           var dark=el.getAttribute('data-theme')!=='dark';
           if(dark){el.setAttribute('data-theme','dark');}else{el.removeAttribute('data-theme');}
-          try{localStorage.setItem('sacram-theme',dark?'dark':'light');}catch(e){}
+          try{localStorage.setItem('ejao-theme',dark?'dark':'light');}catch(e){}
           var b=document.getElementById('theme-btn');if(b)b.textContent=dark?'Light':'Dark';
         }
         (function(){try{if(document.documentElement.getAttribute('data-theme')==='dark'){var b=document.getElementById('theme-btn');if(b)b.textContent='Light';}}catch(e){}})();
-        function sacramCopy(btn,text){
+        function ejaoCopy(btn,text){
           function done(){var o=btn.textContent;btn.textContent='Done';setTimeout(function(){btn.textContent=o;},900);}
           if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(done,done);}else{done();}
         }
-        function sacramCopyPass(btn){
+        function ejaoCopyPass(btn){
           var e=document.getElementById('v-pass');
-          sacramCopy(btn,e?(e.getAttribute('data-real')||''):'');
+          ejaoCopy(btn,e?(e.getAttribute('data-real')||''):'');
         }
         var pwShown=false;
-        function sacramPw(){
+        function ejaoPw(){
           var e=document.getElementById('v-pass');if(!e)return;
           pwShown=!pwShown;
           if(pwShown){e.textContent=e.getAttribute('data-real')||e.textContent;}
           else{e.textContent='\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022';}
         }
-        var sacramOffset=0, sacramStarted=0;
-        var SACRAM_LOG_MAX=200;
-        function sacramFmtUptime(sec){
+        var ejaoOffset=0, ejaoStarted=0;
+        var EJAO_LOG_MAX=200;
+        function ejaoFmtUptime(sec){
           if(!isFinite(sec)||sec<0)sec=0;
           var h=Math.floor(sec/3600), m=Math.floor((sec%3600)/60), s=Math.floor(sec%60);
           return h+'h '+m+'m '+s+'s';
         }
-        function sacramTick(){
-          if(sacramStarted>0){
+        function ejaoTick(){
+          if(ejaoStarted>0){
             var e=document.getElementById('v-uptime');
-            if(e) e.textContent=sacramFmtUptime((Date.now()+sacramOffset-sacramStarted)/1000);
+            if(e) e.textContent=ejaoFmtUptime((Date.now()+ejaoOffset-ejaoStarted)/1000);
           }
         }
-        function sacramFmtRate(bps){
+        function ejaoFmtRate(bps){
           if(!isFinite(bps)||bps<1000) return '0 Kb/s';
           if(bps<1000000) return (bps/1000).toFixed(0)+' Kb/s';
           return (bps/1000000).toFixed(1)+' Mb/s';
         }
-        var sacramHist=[];
-        var SACRAM_COLS=['var(--text)','#c2410c','var(--text-faint)'];
-        function sacramClients(arr){
+        var ejaoHist=[];
+        var EJAO_COLS=['var(--text)','#c2410c','var(--text-faint)'];
+        function ejaoClients(arr){
           var body=document.getElementById('v-clients-body');
           if(!body) return;
           while(body.firstChild) body.removeChild(body.firstChild);
@@ -526,7 +526,7 @@ class PanelServer(
             var pct=Math.max(0,Math.min(100,(arr[i].mb||0)/total*100));
             var seg=document.createElement('div');
             seg.style.width=(Math.round(pct*10)/10)+'%';
-            seg.style.background=SACRAM_COLS[i%SACRAM_COLS.length];
+            seg.style.background=EJAO_COLS[i%EJAO_COLS.length];
             bar.appendChild(seg);
             var li=document.createElement('span');
             li.textContent=String(arr[i].name||'?')+' '+Math.round(pct)+'%';
@@ -534,41 +534,41 @@ class PanelServer(
           }
           body.appendChild(head);body.appendChild(bar);body.appendChild(leg);
         }
-        function sacramRate(total){          var e=document.getElementById('v-rate');
-          if(e) e.textContent=sacramFmtRate(total);
-          sacramHist.push(total||0);
-          while(sacramHist.length>24) sacramHist.shift();
+        function ejaoRate(total){          var e=document.getElementById('v-rate');
+          if(e) e.textContent=ejaoFmtRate(total);
+          ejaoHist.push(total||0);
+          while(ejaoHist.length>24) ejaoHist.shift();
           var c=document.getElementById('v-spark');
           if(!c||!c.getContext) return;
           var x=c.getContext('2d');
           var W=c.width,H=c.height;
           x.clearRect(0,0,W,H);
           var max=1;
-          for(var i=0;i<sacramHist.length;i++) if(sacramHist[i]>max) max=sacramHist[i];
+          for(var i=0;i<ejaoHist.length;i++) if(ejaoHist[i]>max) max=ejaoHist[i];
           var col='#78716c';
           try{col=getComputedStyle(document.documentElement).getPropertyValue('--text-dim')||col;}catch(ignored){}
           x.strokeStyle=col;x.lineWidth=2;x.beginPath();
-          for(var j=0;j<sacramHist.length;j++){
-            var px=sacramHist.length>1?j/(sacramHist.length-1)*W:W;
-            var py=H-3-(sacramHist[j]/max)*(H-6);
+          for(var j=0;j<ejaoHist.length;j++){
+            var px=ejaoHist.length>1?j/(ejaoHist.length-1)*W:W;
+            var py=H-3-(ejaoHist[j]/max)*(H-6);
             if(j===0)x.moveTo(px,py);else x.lineTo(px,py);
           }
           x.stroke();
         }
-        function sacramDot(running){return;}
-        function sacramLive(state){
+        function ejaoDot(running){return;}
+        function ejaoLive(state){
           var e=document.getElementById('v-live');
           if(!e) return;
           if(state==='on'){e.className='live-text';e.textContent='live';}
           else if(state==='off'){e.className='live-text off';e.textContent='offline';}
           else{e.className='live-text';e.textContent='connecting';}
         }
-        function sacramNowLabel(){
+        function ejaoNowLabel(){
           var d=new Date();
           var p=function(n){return n<10?'0'+n:''+n;};
           return p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());
         }
-        function sacramLogLine(text){
+        function ejaoLogLine(text){
           var log=document.getElementById('v-log');
           if(!log) return;
           var cur=document.getElementById('v-log-current');
@@ -576,46 +576,46 @@ class PanelServer(
           var line=document.createElement('div');
           line.id='v-log-current';
           line.className='log-line';
-          line.textContent='['+sacramNowLabel()+'] '+text;
+          line.textContent='['+ejaoNowLabel()+'] '+text;
           log.appendChild(line);
-          while(log.children.length>SACRAM_LOG_MAX) log.removeChild(log.firstChild);
+          while(log.children.length>EJAO_LOG_MAX) log.removeChild(log.firstChild);
           log.scrollTop=log.scrollHeight;
         }
-        function sacramStartStream(){
-          if(!window.EventSource){sacramLive('off');return;}
+        function ejaoStartStream(){
+          if(!window.EventSource){ejaoLive('off');return;}
           var es=new EventSource('/api/stream');
-          es.onopen=function(){sacramLive('on');};
-          es.onmessage=function(ev){sacramLogLine(ev.data);};
+          es.onopen=function(){ejaoLive('on');};
+          es.onmessage=function(ev){ejaoLogLine(ev.data);};
           es.onerror=function(){
-            sacramLive('off');
+            ejaoLive('off');
             // Browsers auto-retry EventSource, but our server closes the TCP
             // socket per-request rather than staying keep-alive-friendly across
             // reconnect storms, so force a clean reconnect after a short delay.
             es.close();
-            setTimeout(sacramStartStream,2000);
+            setTimeout(ejaoStartStream,2000);
           };
         }
-        async function sacramRefresh(){
+        async function ejaoRefresh(){
           try{
             var r=await fetch('/api/status',{cache:'no-store'});
             var d=await r.json();
             var set=function(id,v){var e=document.getElementById(id);if(e)e.textContent=v;};
-            if(d.startedAt>0){sacramStarted=d.startedAt;sacramOffset=d.serverNow-Date.now();}
+            if(d.startedAt>0){ejaoStarted=d.startedAt;ejaoOffset=d.serverNow-Date.now();}
             set('v-running',d.running===true||d.running==='true'?'Running':'Stopped');set('v-uptime',d.uptime);
             set('v-ssid',d.ssid);
             var pe=document.getElementById('v-pass');
             if(pe){pe.setAttribute('data-real',d.passphrase);if(pwShown){pe.textContent=d.passphrase;}}
             set('v-goip',d.goIp);set('v-clients',d.clients);set('v-tunnels',d.tcpTunnels);
-            sacramRate((d.downBps||0)+(d.upBps||0));
-            sacramClients(d.lanClients||[]);
-            sacramDot(d.running);
-            sacramTick();
+            ejaoRate((d.downBps||0)+(d.upBps||0));
+            ejaoClients(d.lanClients||[]);
+            ejaoDot(d.running);
+            ejaoTick();
           }catch(e){}
         }
-        sacramRefresh();
-        sacramStartStream();
-        setInterval(sacramRefresh,2000);
-        setInterval(sacramTick,1000);
+        ejaoRefresh();
+        ejaoStartStream();
+        setInterval(ejaoRefresh,2000);
+        setInterval(ejaoTick,1000);
         </script>
         </body></html>
         """.trimIndent()

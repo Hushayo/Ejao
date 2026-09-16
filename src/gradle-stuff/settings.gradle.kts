@@ -19,6 +19,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Sacram"
+rootProject.name = "Ejao"
 include(":app")
 project(":app").projectDir = file("../MobileApp-src")

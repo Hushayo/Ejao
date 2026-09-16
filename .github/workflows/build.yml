@@ -83,22 +83,22 @@ jobs:
 
       - name: Build release APK
         env:
-          SACRAM_KEYSTORE_BASE64: ${{ secrets.SACRAM_KEYSTORE_BASE64 }}
-          SACRAM_KEY_ALIAS: ${{ secrets.SACRAM_KEY_ALIAS }}
-          SACRAM_STORE_PASSWORD: ${{ secrets.SACRAM_STORE_PASSWORD }}
-          SACRAM_KEY_PASSWORD: ${{ secrets.SACRAM_KEY_PASSWORD }}
+          EJAO_KEYSTORE_BASE64: ${{ secrets.EJAO_KEYSTORE_BASE64 }}
+          EJAO_KEY_ALIAS: ${{ secrets.EJAO_KEY_ALIAS }}
+          EJAO_STORE_PASSWORD: ${{ secrets.EJAO_STORE_PASSWORD }}
+          EJAO_KEY_PASSWORD: ${{ secrets.EJAO_KEY_PASSWORD }}
         run: cd src/gradle-stuff && ./gradlew assembleRelease --no-daemon -PappVersion="${{ steps.tag.outputs.tag }}"
 
-      - name: Rename APK to sacram.apk
-        run: cp src/MobileApp-src/build/outputs/apk/release/app-release.apk src/MobileApp-src/build/outputs/apk/release/sacram.apk
+      - name: Rename APK to ejao.apk
+        run: cp src/MobileApp-src/build/outputs/apk/release/app-release.apk src/MobileApp-src/build/outputs/apk/release/ejao.apk
 
       - name: Compute SHA256 checksum
         id: sha
         run: |
           cd src/MobileApp-src/build/outputs/apk/release
-          HASH=$(sha256sum sacram.apk | awk '{print $1}')
+          HASH=$(sha256sum ejao.apk | awk '{print $1}')
           echo "hash=$HASH" >> "$GITHUB_OUTPUT"
-          echo "$HASH  sacram.apk" > sacram.apk.sha256
+          echo "$HASH  ejao.apk" > ejao.apk.sha256
 
       - name: Publish release (auto-incremented tag)
         if: needs.gate.outputs.publish == 'true'
@@ -107,14 +107,14 @@ jobs:
           SHA256: ${{ steps.sha.outputs.hash }}
         run: |
           gh release create "${{ steps.tag.outputs.tag }}" \
-            src/MobileApp-src/build/outputs/apk/release/sacram.apk \
-            src/MobileApp-src/build/outputs/apk/release/sacram.apk.sha256 \
+            src/MobileApp-src/build/outputs/apk/release/ejao.apk \
+            src/MobileApp-src/build/outputs/apk/release/ejao.apk.sha256 \
             --title "${{ steps.tag.outputs.tag }}" \
             --notes "Automatic build from commit ${{ github.sha }} | SHA256: $SHA256"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: sacram-udp-bridge-apk
-          path: src/MobileApp-src/build/outputs/apk/release/sacram.apk
+          name: ejao-udp-bridge-apk
+          path: src/MobileApp-src/build/outputs/apk/release/ejao.apk
           retention-days: 14

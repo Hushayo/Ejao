@@ -6,11 +6,11 @@ plugins {
 }
 
 android {
-    namespace = "com.sacram.proxy"
+    namespace = "com.ejao.proxy"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.sacram.proxy"
+        applicationId = "com.ejao.proxy"
         minSdk = 26
         targetSdk = 34
         versionCode = 1
@@ -26,16 +26,16 @@ android {
         // Keystore is supplied via CI secrets; locally the env vars are absent
         // and the default debug key is used instead, which is fine for dev.
         create("ci") {
-            val b64 = System.getenv("SACRAM_KEYSTORE_BASE64")
+            val b64 = System.getenv("EJAO_KEYSTORE_BASE64")
             if (b64 != null) {
-                val keyFile = File(project.rootDir, "sacram-release-key.jks")
+                val keyFile = File(project.rootDir, "ejao-release-key.jks")
                 if (!keyFile.exists()) {
                     keyFile.writeBytes(Base64.getDecoder().decode(b64))
                 }
                 storeFile = keyFile
-                storePassword = System.getenv("SACRAM_STORE_PASSWORD") ?: ""
-                keyAlias = System.getenv("SACRAM_KEY_ALIAS") ?: ""
-                keyPassword = System.getenv("SACRAM_KEY_PASSWORD") ?: ""
+                storePassword = System.getenv("EJAO_STORE_PASSWORD") ?: ""
+                keyAlias = System.getenv("EJAO_KEY_ALIAS") ?: ""
+                keyPassword = System.getenv("EJAO_KEY_PASSWORD") ?: ""
             }
         }
     }
@@ -44,7 +44,7 @@ android {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            if (System.getenv("SACRAM_KEYSTORE_BASE64") != null) {
+            if (System.getenv("EJAO_KEYSTORE_BASE64") != null) {
                 signingConfig = signingConfigs.getByName("ci")
             }
         }

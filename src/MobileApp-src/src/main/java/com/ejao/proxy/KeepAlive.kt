@@ -1,4 +1,4 @@
-package com.sacram.proxy
+package com.ejao.proxy
 
 import android.content.Context
 import android.util.Log
@@ -22,7 +22,7 @@ import java.net.URL
  * autostart, which the Keep-Alive tab helps with.
  */
 object KeepAlive {
-    private const val TAG = "SacramKeepAlive"
+    private const val TAG = "EjaoKeepAlive"
     private const val DEFAULT_URL = "https://www.google.com/generate_204"
     private const val MIN_INTERVAL_MS = 15_000L
 

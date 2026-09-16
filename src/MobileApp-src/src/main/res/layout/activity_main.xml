@@ -5,7 +5,7 @@
     android:layout_height="match_parent"
     android:background="@android:color/transparent">
 
-    <com.sacram.proxy.SwipeScrollView
+    <com.ejao.proxy.SwipeScrollView
         android:id="@+id/mainScroll"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
@@ -378,7 +378,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
-                    android:text="How often Sacram checks GitHub. Off saves metered data."
+                    android:text="How often Ejao checks GitHub. Off saves metered data."
                     android:textColor="@color/text_secondary"
                     android:textSize="12sp" />
             </LinearLayout>
@@ -435,7 +435,7 @@
                 android:drawableStart="@drawable/ic_shield"
                 android:drawablePadding="8dp"
                 android:letterSpacing="0.06"
-                android:text="KEEP SACRAM ALIVE"
+                android:text="KEEP EJAO ALIVE"
                 android:textColor="@color/text_secondary"
                 android:textSize="12sp"
                 android:textStyle="bold" />
@@ -650,7 +650,7 @@
         </LinearLayout>
 
     </LinearLayout>
-    </com.sacram.proxy.SwipeScrollView>
+    </com.ejao.proxy.SwipeScrollView>
 
     <!-- Floating bottom pill nav: sliding ink capsule marks the active tab -->
     <FrameLayout

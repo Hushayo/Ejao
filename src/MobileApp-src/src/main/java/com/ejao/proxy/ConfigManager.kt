@@ -1,4 +1,4 @@
-package com.sacram.proxy
+package com.ejao.proxy
 
 import android.content.ContentValues
 import android.content.Context
@@ -66,10 +66,10 @@ data class AppConfig(
 
 object ConfigManager {
 
-    private const val DIR_NAME = "Sacram"
+    private const val DIR_NAME = "Ejao"
     private const val FILE_NAME = "config.txt"
 
-    val defaultConfig = AppConfig("SacramAP", "", 1080)
+    val defaultConfig = AppConfig("EjaoAP", "", 1080)
 
     fun internalConfigFile(context: Context): File {
         val dir = File(context.filesDir, DIR_NAME)
@@ -116,7 +116,7 @@ object ConfigManager {
         return try {
             val resolver = context.contentResolver
             val collection = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-            val relative = Environment.DIRECTORY_DOCUMENTS + "/Sacram/"
+            val relative = Environment.DIRECTORY_DOCUMENTS + "/Ejao/"
             val projection = arrayOf(MediaStore.Files.FileColumns._ID)
             val selection =
                 "${MediaStore.Files.FileColumns.RELATIVE_PATH} = ? AND " +
@@ -240,7 +240,7 @@ object ConfigManager {
         try {
             val file = internalConfigFile(context)
             val lines = listOf(
-            "# Sacram config",
+            "# Ejao config",
             "# Edit and restart the proxy to apply.",
             "ssid=${config.ssid}",
             "password=${config.password}",

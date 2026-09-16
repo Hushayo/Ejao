@@ -1,4 +1,4 @@
-package com.sacram.proxy
+package com.ejao.proxy
 
 import android.content.Context
 import androidx.work.CoroutineWorker
@@ -23,9 +23,9 @@ import java.util.concurrent.TimeUnit
  * install. This mirrors what a manual check does, minus the auto-launch.
  */
 object UpdateChecker {
-    private const val REPO_LATEST = "https://api.github.com/repos/SynacNipo/Sacram/releases/latest"
-    private const val REPO_LIST = "https://api.github.com/repos/SynacNipo/Sacram/releases?per_page=30"
-    private const val WORK_NAME = "sacram_update_check"
+    private const val REPO_LATEST = "https://api.github.com/repos/mjoohos23/Ejao/releases/latest"
+    private const val REPO_LIST = "https://api.github.com/repos/mjoohos23/Ejao/releases?per_page=30"
+    private const val WORK_NAME = "ejao_update_check"
 
     /**
      * Schedule (or re-affirm) the background update check at [intervalHours].
@@ -75,7 +75,7 @@ object UpdateChecker {
         return try {
             val conn = URL(REPO_LATEST).openConnection() as HttpURLConnection
             conn.requestMethod = "GET"
-            conn.setRequestProperty("User-Agent", "Sacram-App")
+            conn.setRequestProperty("User-Agent", "Ejao-App")
             conn.connectTimeout = 10000
             conn.readTimeout = 10000
             try {
@@ -95,7 +95,7 @@ object UpdateChecker {
         return try {
             val conn = URL(REPO_LIST).openConnection() as HttpURLConnection
             conn.requestMethod = "GET"
-            conn.setRequestProperty("User-Agent", "Sacram-App")
+            conn.setRequestProperty("User-Agent", "Ejao-App")
             conn.connectTimeout = 10000
             conn.readTimeout = 10000
             try {
@@ -126,11 +126,11 @@ object UpdateChecker {
             val base = context.getExternalFilesDir(null) ?: context.filesDir
             val dir = File(base, "updates")
             if (!dir.exists()) dir.mkdirs()
-            val file = File(dir, "sacram.apk")
-            val conn = URL("https://github.com/SynacNipo/Sacram/releases/download/$tag/sacram.apk")
+            val file = File(dir, "ejao.apk")
+            val conn = URL("https://github.com/mjoohos23/Ejao/releases/download/$tag/ejao.apk")
                 .openConnection() as HttpURLConnection
             conn.requestMethod = "GET"
-            conn.setRequestProperty("User-Agent", "Sacram-App")
+            conn.setRequestProperty("User-Agent", "Ejao-App")
             conn.connectTimeout = 15000
             conn.readTimeout = 60000
             try {
@@ -163,9 +163,9 @@ object UpdateChecker {
     fun downloadedApkFile(context: Context): File {
         return try {
             val base = context.getExternalFilesDir(null) ?: context.filesDir
-            File(File(base, "updates"), "sacram.apk")
+            File(File(base, "updates"), "ejao.apk")
         } catch (_: Exception) {
-            File(context.filesDir, "sacram.apk")
+            File(context.filesDir, "ejao.apk")
         }
     }
 
