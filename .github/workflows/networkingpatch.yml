@@ -1,13 +1,18 @@
-name: Build APK
+name: Networking Patch Build
 
 on:
   push:
-    branches: [main]
+    branches: [networkingpatch]
   workflow_dispatch:
 
-# Build on GitHub runners so your machine is never loaded.
+# High-risk networking rewrites land here, NOT on main.
+# A push to networkingpatch whose message contains [Trigger] builds a test
+# APK and publishes it as a pre-release tagged v1.X-networkingpatch so beta
+# users can install it without touching stable. Stable releases still only
+# come from main + [Trigger].
+
 concurrency:
-  group: apk-build
+  group: networkingpatch-build
   cancel-in-progress: true
 
 jobs:
@@ -15,26 +20,21 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       run-build: ${{ steps.check.outputs.run-build }}
-      publish: ${{ steps.check.outputs.publish }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Check for [Trigger]/[DEBUG] in latest commit message
+        with:
+          ref: networkingpatch
+      - name: Check for [Trigger] in latest commit message
         id: check
         run: |
           msg=$(git log -1 --format=%B)
           if echo "$msg" | grep -q "\[Trigger\]"; then
             echo "run-build=true" >> "$GITHUB_OUTPUT"
-            echo "publish=true" >> "$GITHUB_OUTPUT"
-            echo "Commit contains [Trigger] -> building + publishing release"
-          elif echo "$msg" | grep -q "\[DEBUG\]"; then
-            echo "run-build=false" >> "$GITHUB_OUTPUT"
-            echo "publish=false" >> "$GITHUB_OUTPUT"
-            echo "Commit contains [DEBUG] -> skipping APK build (Debug Compile Check covers it)"
+            echo "Commit contains [Trigger] -> building + publishing beta pre-release"
           else
             echo "run-build=false" >> "$GITHUB_OUTPUT"
-            echo "publish=false" >> "$GITHUB_OUTPUT"
-            echo "No [Trigger]/[DEBUG] in commit: $msg -> skipping build"
+            echo "No [Trigger] in commit: $msg -> skipping beta build"
           fi
 
   build:
@@ -47,6 +47,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: networkingpatch
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -63,26 +65,39 @@ jobs:
       - name: Run unit tests
         run: cd src/gradle-stuff && ./gradlew test --no-daemon
 
-      - name: Compute next free release tag
+      - name: Compute networking-patch tag
         id: tag
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Stable tags only: prereleases (networkingpatch) must not move the counter.
-          latest=$(gh release list --json tagName -q '.[].tagName' | grep -v networkingpatch | sort -V | tail -1)
-          if [ -z "$latest" ]; then
-            # Last stable on the old repo was v1.100 — continue the line so the
-            # in-app updater (numeric version compare) sees new releases as newer.
-            latest="v1.100"
+          # Continue both lines: last stable was v1.100, last beta v1.108.
+          # Beta minor = max(stable minor, beta minor) + 1 so the tag always
+          # compares newer than anything the app may already have installed.
+          stable=$(gh release list --json tagName -q '.[].tagName' | grep -v networkingpatch | sort -V | tail -1)
+          if [ -z "$stable" ]; then
+            stable="v1.100"
           fi
-          major=$(echo "$latest" | sed 's/v\([0-9]*\)\..*/\1/')
-          minor=$(echo "$latest" | sed 's/v[0-9]*\.\([0-9]*\).*/\1/')
-          next="v$major.$((minor + 1))"
-          while gh release view "$next" >/dev/null 2>&1; do
+          beta=$(gh release list --json tagName -q '.[].tagName' | grep networkingpatch | sort -V | tail -1)
+          if [ -z "$beta" ]; then
+            beta="v1.108-networkingpatch"
+          fi
+          smin=$(echo "$stable" | sed 's/v[0-9]*\.\([0-9]*\).*/\1/')
+          bmin=$(echo "$beta" | sed 's/v[0-9]*\.\([0-9]*\).*/\1/')
+          minor=$smin
+          if [ "$bmin" -gt "$minor" ]; then
+            minor=$bmin
+          fi
+          minor=$((minor + 1))
+          tag="v1.$minor-networkingpatch"
+          version="1.$minor-networkingpatch"
+          while gh release view "$tag" >/dev/null 2>&1; do
             minor=$((minor + 1))
-            next="v$major.$minor"
+            tag="v1.$minor-networkingpatch"
+            version="1.$minor-networkingpatch"
           done
-          echo "tag=$next" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Patch tag: $tag (app version $version)"
 
       - name: Check signing secret present
         env:
@@ -100,10 +115,10 @@ jobs:
           EJAO_STORE_PASSWORD: ${{ secrets.EJAO_STORE_PASSWORD }}
           EJAO_KEY_PASSWORD: ${{ secrets.EJAO_KEY_PASSWORD }}
         run: |
-          TAG="${{ steps.tag.outputs.tag }}"
-          VER="${TAG#v}"
-          MAJOR=$(echo "$VER" | cut -d. -f1)
-          MINOR=$(echo "$VER" | cut -d. -f2)
+          VER="${{ steps.tag.outputs.version }}"
+          NUM=$(echo "$VER" | sed 's/^\([0-9]*\)\.\([0-9]*\).*/\1 \2/')
+          MAJOR=$(echo "$NUM" | cut -d' ' -f1)
+          MINOR=$(echo "$NUM" | cut -d' ' -f2)
           CODE=$((MAJOR * 10000 + MINOR))
           cd src/gradle-stuff && ./gradlew assembleRelease --no-daemon -PappVersion="$VER" -PversionCode="$CODE"
 
@@ -118,8 +133,7 @@ jobs:
           echo "hash=$HASH" >> "$GITHUB_OUTPUT"
           echo "$HASH  ejao.apk" > ejao.apk.sha256
 
-      - name: Publish release (auto-incremented tag)
-        if: needs.gate.outputs.publish == 'true'
+      - name: Publish networking-patch pre-release
         env:
           GH_TOKEN: ${{ github.token }}
           SHA256: ${{ steps.sha.outputs.hash }}
@@ -127,13 +141,13 @@ jobs:
           gh release create "${{ steps.tag.outputs.tag }}" \
             src/MobileApp-src/build/outputs/apk/release/ejao.apk \
             src/MobileApp-src/build/outputs/apk/release/ejao.apk.sha256 \
-            --title "${{ steps.tag.outputs.tag }}" \
-            --latest \
-            --notes "Automatic build from commit ${{ github.sha }} | SHA256: $SHA256"
+            --title "${{ steps.tag.outputs.version }} - Networking Patch (beta)" \
+            --notes "Experimental networking rewrite from branch networkingpatch @ commit ${{ github.sha }} | App version ${{ steps.tag.outputs.version }} | SHA256: $SHA256 | For beta testers only - stable users stay on main releases." \
+            --prerelease
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ejao-udp-bridge-apk
+          name: ejao-networkingpatch-apk
           path: src/MobileApp-src/build/outputs/apk/release/ejao.apk
           retention-days: 14

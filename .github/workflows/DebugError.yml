@@ -67,7 +67,7 @@ jobs:
       - uses: trstringer/manual-approval@v1
         timeout-minutes: 300
         with:
-          secret: ${{ github.TOKEN }}
+          secret: ${{ github.token }}
           approvers: mjoohos23
           minimum-approvals: 1
           issue-title: "Ejao debug compile - confirm result"

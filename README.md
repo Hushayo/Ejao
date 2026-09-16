@@ -40,7 +40,7 @@ Full setup guide, config reference and keep-alive details live in the
   relay. Fall back to TCP when UDP misbehaves.
 - **SOCKS4 needs 4a:** enable remote hostname resolving (SOCKS4a) in the
   client or hostnames won't resolve. Details on the
-  [wiki](https://github.com/mjoohos23/Ejao/wiki/PC-Client#socks4--socks4a-legacy-clients).
+  [wiki](https://github.com/mjoohos23/Ejao/wiki/PC-Client#option-3--socks4--socks4a-legacy-clients-tcp-only).
 
 ## Building
 

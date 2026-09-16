@@ -13,10 +13,11 @@ android {
         applicationId = "com.ejao.proxy"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        // Overridable from CI via -PappVersion so the keep-alive heartbeat reports
-        // the exact release tag the build is published under.
-        val appVersion = (project.findProperty("appVersion") as? String) ?: "1.41"
+        // Overridable from CI via -PappVersion (no leading v, e.g. 1.101) and
+        // -PversionCode (e.g. 10101 = major * 10000 + minor) so the
+        // keep-alive heartbeat and panel report the exact release tag.
+        versionCode = (project.findProperty("versionCode") as? String)?.toIntOrNull() ?: 1
+        val appVersion = (project.findProperty("appVersion") as? String) ?: "1.101"
         versionName = appVersion
     }
 
@@ -27,7 +28,7 @@ android {
         // and the default debug key is used instead, which is fine for dev.
         create("ci") {
             val b64 = System.getenv("EJAO_KEYSTORE_BASE64")
-            if (b64 != null) {
+            if (!b64.isNullOrEmpty()) {
                 val keyFile = File(project.rootDir, "ejao-release-key.jks")
                 if (!keyFile.exists()) {
                     keyFile.writeBytes(Base64.getDecoder().decode(b64))
@@ -44,7 +45,7 @@ android {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            if (System.getenv("EJAO_KEYSTORE_BASE64") != null) {
+            if (!System.getenv("EJAO_KEYSTORE_BASE64").isNullOrEmpty()) {
                 signingConfig = signingConfigs.getByName("ci")
             }
         }
