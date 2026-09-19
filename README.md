@@ -11,7 +11,10 @@
 > [!NOTE]
 > **Stable** Things are subject to change.
 
-> dev note : btw this is like pdanet and tetherfusenet replacement 
+> [!WARNING]
+> This application is tested only on Windows machine. I do not provide tutorial on how to do it on a phone.
+
+[dev note : btw this is like pdanet and tetherfusenet replacement]
 
 Android app (Kotlin) makes **WiFi Direct have Internet access via proxy** so a PC can reach the internet through the phone proxy
 connection
