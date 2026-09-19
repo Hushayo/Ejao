@@ -136,6 +136,9 @@ class ProxyService : Service() {
             if (!started.get()) return
 
             AppState.running.value = true
+            TrafficStats.reset()
+            AppState.netMaxBps = 0L
+            AppState.netMinBps = 0L
             updateStatus("Checking WiFi...")
             val p2p = WifiDirectManager(this)
             var wifiOk = p2p.ensureWifiOn()
@@ -313,12 +316,15 @@ class ProxyService : Service() {
             val groupRecreateMax = 21
             var groupMissStreak = 0
             var downStreak = 0
+            var lastClientCount = -1
             var lastRx = readP2pBytes()?.first ?: -1L
             var lastTx = readP2pBytes()?.second ?: -1L
             var lastNetT = System.currentTimeMillis()
+            var tick = 0
             while (currentCoroutineContext().isActive && started.get() && pipelineGen.get() == myGen) {
-                delay(5000)
+                delay(1000)
                 if (pipelineGen.get() != myGen || !started.get()) return
+                tick++
                 try {
                     val (rxBps, txBps) = TrafficStats.sampleNow()
                     if (rxBps > 0 || txBps > 0) {
@@ -343,8 +349,14 @@ class ProxyService : Service() {
                             lastNetT = now
                         }
                     }
+                    val total = AppState.netDownBps + AppState.netUpBps
+                    TrafficStats.recordSample(total)
+                    AppState.netMaxBps = TrafficStats.maxBps
+                    AppState.netMinBps = TrafficStats.minActiveBps
                 } catch (_: Exception) {
                 }
+                // Heavy work stays on ~5s cadence; throughput above is realtime 1s.
+                if (tick % 5 != 0) continue
                 if ((backupPanel == null || backupPanel?.isRunning() != true) && started.get()) {
                     val lastGoIp = AppState.apInfo.value.goIp.ifEmpty { goIp }
                     val fresh = runCatching { ConfigManager.load(this) }.getOrDefault(config)
@@ -401,34 +413,107 @@ class ProxyService : Service() {
                     } else {
                         groupMissStreak = 0
                         AppState.isReforming.value = false
-                        val n = g.clientList?.size ?: 0
-                        AppState.apInfo.value = AppState.apInfo.value.copy(clients = n)
                         try {
+                            val goIpNow = AppState.apInfo.value.goIp.ifEmpty { goIp }
                             val usage = ClientUsage.snapshotMb()
-                            val mapped = (g.clientList ?: emptyList()).map { d ->
-                                val mac = d?.deviceAddress ?: ""
-                                val ip = arpLookup(mac)
-                                val rawName = d?.deviceName?.trim() ?: ""
-                                LanClient(
-                                    name = rawName.ifEmpty { "Unknown device" },
-                                    ip = ip.ifEmpty { mac.ifEmpty { "?" } },
-                                    mb = usage[ip] ?: 0.0
-                                )
+                            val arp = readArpTable()
+                            val p2pDevices = (g.clientList ?: emptyList()).mapNotNull { d ->
+                                val mac = (d?.deviceAddress ?: "").trim()
+                                if (mac.isEmpty()) null
+                                else mac to (d?.deviceName?.trim() ?: "")
                             }
-                            val matchedIps = (g.clientList ?: emptyList()).mapNotNull { d ->
-                                arpLookup(d?.deviceAddress ?: "").takeIf { it.isNotEmpty() }
-                            }.toSet()
-                            val orphans = usage.filter { it.key !in matchedIps && it.value > 0.0 }.map { (ip, mb) ->
-                                LanClient(name = "Unknown device", ip = ip, mb = mb)
+                            val p2pMacs = p2pDevices.map { it.first.lowercase() }.toSet()
+                            val p2pNameByMac = p2pDevices.associate { it.first.lowercase() to it.second }
+                            // MAC -> IP from ARP (preferred: p2p/wlan interfaces, fallback any).
+                            val ipByMac = mutableMapOf<String, String>()
+                            val macByIp = mutableMapOf<String, String>()
+                            for ((ip, mac, _) in arp) {
+                                if (ip.isEmpty() || mac.isEmpty()) continue
+                                if (ip == goIpNow || ip == "192.168.49.1") continue
+                                val ml = mac.lowercase()
+                                if (ipByMac[ml].isNullOrEmpty()) ipByMac[ml] = ip
+                                if (macByIp[ip].isNullOrEmpty()) macByIp[ip] = mac
                             }
-                            AppState.lanClients.value = (mapped + orphans).sortedByDescending { it.mb }
+                            class Merged(var mac: String, var ip: String, var name: String, var mb: Double)
+                            val merged = linkedMapOf<String, Merged>()
+                            fun keyForEntry(mac: String, ip: String): String {
+                                val ml = mac.lowercase()
+                                if (ml.isNotEmpty() && ml.contains(":")) return "mac:$ml"
+                                if (ip.isNotEmpty()) return "ip:$ip"
+                                return ""
+                            }
+                            // 1) P2P members first (authoritative membership).
+                            for ((mac, rawName) in p2pDevices) {
+                                val ml = mac.lowercase()
+                                val ip = ipByMac[ml] ?: ""
+                                val custom = runCatching { DeviceNames.get(this@ProxyService, mac, ip) }.getOrNull()
+                                val display = custom ?: rawName.ifEmpty { "Unknown device" }
+                                val mb = if (ip.isNotEmpty()) usage[ip] ?: 0.0 else 0.0
+                                merged["mac:$ml"] = Merged(mac, ip, display, mb)
+                            }
+                            // 2) ARP entries with traffic or P2P membership (real devices, even if P2P list lags).
+                            for ((ip, mac, _) in arp) {
+                                if (ip == goIpNow || ip == "192.168.49.1") continue
+                                val ml = mac.lowercase()
+                                val k = if (ml.contains(":")) "mac:$ml" else "ip:$ip"
+                                val existing = merged[k]
+                                if (existing != null) {
+                                    if (existing.ip.isEmpty()) existing.ip = ip
+                                    if (existing.mac.isEmpty()) existing.mac = mac
+                                    val u = usage[ip]
+                                    if (u != null && u > existing.mb) existing.mb = u
+                                } else {
+                                    // Only surface ARP rows that are P2P members or have real usage.
+                                    val u = usage[ip] ?: 0.0
+                                    val isP2p = ml in p2pMacs
+                                    if (!isP2p && u <= 0.0) continue
+                                    val custom = runCatching { DeviceNames.get(this@ProxyService, mac, ip) }.getOrNull()
+                                    val p2pName = p2pNameByMac[ml] ?: ""
+                                    val display = custom ?: p2pName.ifEmpty { "Unknown device" }
+                                    merged[k] = Merged(mac, ip, display, u)
+                                }
+                            }
+                            // 3) Usage orphans (traffic from an IP ARP hasn't mapped yet) — never the gateway.
+                            for ((ip, mb) in usage) {
+                                if (mb <= 0.0) continue
+                                if (ip == goIpNow || ip == "192.168.49.1") continue
+                                val mac = macByIp[ip] ?: ""
+                                val k = keyForEntry(mac, ip)
+                                if (k.isEmpty() || merged.containsKey(k)) {
+                                    // Attribute usage to existing MAC entry if IP now resolves to it.
+                                    if (k.isNotEmpty()) {
+                                        val e = merged[k]
+                                        if (e != null && mb > e.mb) e.mb = mb
+                                    }
+                                    continue
+                                }
+                                // If this IP belongs to an already-listed MAC via another IP, skip (one row per device).
+                                if (mac.isNotEmpty() && merged.containsKey("mac:${mac.lowercase()}")) continue
+                                val custom = runCatching { DeviceNames.get(this@ProxyService, mac, ip) }.getOrNull()
+                                val p2pName = if (mac.isNotEmpty()) p2pNameByMac[mac.lowercase()] ?: "" else ""
+                                merged[k] = Merged(mac, ip, custom ?: p2pName.ifEmpty { "Unknown device" }, mb)
+                            }
+                            val list = merged.values.map { m ->
+                                val id = DeviceNames.keyFor(m.mac, m.ip).ifEmpty { m.ip.ifEmpty { m.mac } }
+                                LanClient(name = m.name, ip = m.ip.ifEmpty { m.mac.ifEmpty { "?" } }, mb = m.mb, mac = m.mac, id = id)
+                            }.sortedByDescending { it.mb }
+                            val realCount = list.size
+                            AppState.apInfo.value = AppState.apInfo.value.copy(clients = realCount)
+                            AppState.lanClients.value = list
                         } catch (_: Exception) {
                         }
                         if (proxyDownNotified && backupPanelPortActual > 0) {
                             val bIp = AppState.apInfo.value.goIp
-                            AppState.status.value = "PROXY DOWN - WiFi Direct still up (clients: $n). Restart: http://$bIp:$backupPanelPortActual/"
+                            val c = AppState.apInfo.value.clients
+                            val msg = "PROXY DOWN - WiFi Direct still up (clients: $c). Restart: http://$bIp:$backupPanelPortActual/"
+                            if (AppState.status.value != msg) AppState.status.value = msg
+                            lastClientCount = c
                         } else {
-                            AppState.status.value = "RUNNING - clients connected: $n"
+                            val c = AppState.apInfo.value.clients
+                            if (c != lastClientCount || proxyDownNotified) {
+                                lastClientCount = c
+                                AppState.status.value = "RUNNING - clients connected: $c"
+                            }
                         }
                     }
                 }
@@ -565,23 +650,31 @@ class ProxyService : Service() {
         return null
     }
 
-    private fun arpLookup(mac: String): String {
-        val want = mac.lowercase()
-        if (want.isEmpty()) return ""
+    private fun readArpTable(): List<Triple<String, String, String>> {
         return try {
             java.io.File("/proc/net/arp").readLines().asSequence()
                 .drop(1)
                 .mapNotNull { line ->
                     val p = line.trim().split(Regex("\\s+"))
                     if (p.size < 6) null
-                    else Triple(p[0], p[2], p[3].lowercase() to p[5])
+                    else Triple(p[0], p[3].lowercase(), p[5])
                 }
-                .firstOrNull { (_, flags, hwDev) ->
-                    flags == "0x2" && hwDev.second.startsWith("p2p") && hwDev.first == want
-                }?.first ?: ""
+                .filter { (_, mac, _) -> mac.contains(":") && mac != "00:00:00:00:00:00" }
+                .toList()
         } catch (_: Exception) {
-            ""
+            emptyList()
         }
+    }
+
+    private fun arpLookup(mac: String): String {
+        val want = mac.lowercase()
+        if (want.isEmpty()) return ""
+        val rows = readArpTable()
+        // Prefer direct P2P/WLAN interfaces, fall back to any complete entry.
+        rows.firstOrNull { (_, m, dev) ->
+            m == want && (dev.contains("p2p") || dev.contains("wlan"))
+        }?.let { return it.first }
+        return rows.firstOrNull { (_, m, _) -> m == want }?.first ?: ""
     }
 
     private suspend fun recreateGroup(p2p: WifiDirectManager, config: AppConfig) {

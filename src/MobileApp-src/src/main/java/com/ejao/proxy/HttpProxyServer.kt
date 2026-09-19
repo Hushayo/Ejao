@@ -299,7 +299,7 @@ class HttpProxyServer(
                         }
                     }
                 }
-                onLog("HTTP $method $host:$port$path")
+                if (!local) onLog("HTTP $method $host:$port$path")
 
                 val upIn = StreamReader(upstream.getInputStream())
                 val statusLine = readLine(upIn) ?: throw IOException("no response from upstream")

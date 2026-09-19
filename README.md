@@ -45,7 +45,7 @@ Full setup guide, config reference and keep-alive details live in the
 ## Constraints 
 
 Android constraints: SSID sets `DIRECT-EjaoAP` prefix automatically, you can change it.
-password must be 8–63 ASCII chars, ports 1–65535.
+password must be 8–63 ASCII chars, ports 1024–65535 (1–1023 need root).
 
 ## Keep-alive (do once after installing)
 

@@ -7,6 +7,8 @@ object TrafficStats {
     val txBytes = AtomicLong(0L)
     @Volatile var rxBps = 0L
     @Volatile var txBps = 0L
+    @Volatile var maxBps = 0L
+    @Volatile var minActiveBps = 0L
     private var lastRx = 0L
     private var lastTx = 0L
     private var lastT = 0L
@@ -30,7 +32,15 @@ object TrafficStats {
         lastRx = rx
         lastTx = tx
         lastT = now
+        recordSample(rxBps + txBps)
         return rxBps to txBps
+    }
+
+    @Synchronized fun recordSample(totalBps: Long) {
+        if (totalBps > maxBps) maxBps = totalBps
+        if (totalBps > 0) {
+            if (minActiveBps == 0L || totalBps < minActiveBps) minActiveBps = totalBps
+        }
     }
 
     fun reset() {
@@ -38,6 +48,8 @@ object TrafficStats {
         txBytes.set(0)
         rxBps = 0
         txBps = 0
+        maxBps = 0
+        minActiveBps = 0
         lastRx = 0
         lastTx = 0
         lastT = 0

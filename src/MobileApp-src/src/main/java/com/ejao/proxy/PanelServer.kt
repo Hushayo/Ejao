@@ -129,6 +129,10 @@ class PanelServer(
                     onRestartRequest()
                     return
                 }
+                if (target.substringBefore("?") == "/rename") {
+                    handleRename(output, headers, input)
+                    return
+                }
                 val cl = headers.firstOrNull { it.startsWith("Content-Length:", true) }
                     ?.substringAfter(':')?.trim()?.toIntOrNull()
                 val body = if (cl != null && cl in 1..1_000_000) readExact(input, cl) else ""
@@ -143,6 +147,10 @@ class PanelServer(
             }
             if (target == "/api/stream") {
                 streamStatusSse(client, output)
+                return
+            }
+            if (target.substringBefore("?") == "/icon.png" || target.substringBefore("?") == "/favicon.ico") {
+                writeIcon(output)
                 return
             }
             writePanelPage(output, buildPanelHtml())
@@ -186,6 +194,83 @@ class PanelServer(
 
     private fun escapeSse(s: String): String = s.replace("\n", " ").replace("\r", "")
 
+    private fun writeIcon(output: BufferedOutputStream) {
+        try {
+            val resId = context.resources.getIdentifier("ic_launcher_legacy", "drawable", context.packageName)
+            if (resId == 0) return
+            context.resources.openRawResource(resId).use { ins ->
+                val bytes = ins.readBytes()
+                val header = "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n" +
+                    "Content-Length: ${bytes.size}\r\nCache-Control: max-age=86400\r\nConnection: close\r\n\r\n"
+                output.write(header.toByteArray(Charsets.UTF_8))
+                output.write(bytes)
+                output.flush()
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun handleRename(output: BufferedOutputStream, headers: List<String>, input: BufferedInputStream) {
+        try {
+            val cl = headers.firstOrNull { it.startsWith("Content-Length:", true) }
+                ?.substringAfter(':')?.trim()?.toIntOrNull() ?: 0
+            val body = if (cl in 1..1_000_000) readExact(input, cl) else ""
+            val map = mutableMapOf<String, String>()
+            body.split('&').forEach { pair ->
+                if (pair.isEmpty()) return@forEach
+                val idx = pair.indexOf('=')
+                val k = if (idx >= 0) urlDecode(pair.substring(0, idx)) else urlDecode(pair)
+                val v = if (idx >= 0) urlDecode(pair.substring(idx + 1)) else ""
+                map[k] = v
+            }
+            // Accept both form-encoded and tiny JSON: {"id":"..","name":".."}.
+            var id = map["id"] ?: ""
+            var name = map["name"] ?: ""
+            if (id.isEmpty() || name.isEmpty()) {
+                val mId = Regex(""""id"\s*:\s*"([^"]*)"""").find(body)?.groupValues?.get(1) ?: ""
+                val mName = Regex(""""name"\s*:\s*"([^"]*)"""").find(body)?.groupValues?.get(1) ?: ""
+                if (id.isEmpty()) id = mId
+                if (name.isEmpty()) name = mName
+            }
+            id = id.trim()
+            name = name.trim().take(32)
+            var ok = false
+            if (id.isNotEmpty() && name.isNotEmpty()) {
+                // id is "mac:xx" or "ip:1.2.3.4" (see DeviceNames.keyFor).
+                val mac: String
+                val ip: String
+                if (id.startsWith("mac:")) {
+                    mac = id.removePrefix("mac:")
+                    ip = map["ip"] ?: ""
+                } else if (id.startsWith("ip:")) {
+                    ip = id.removePrefix("ip:")
+                    mac = map["mac"] ?: ""
+                } else {
+                    mac = if (id.contains(":")) id else ""
+                    ip = if (mac.isEmpty()) id else (map["ip"] ?: "")
+                }
+                DeviceNames.set(context, mac, ip, name)
+                // Refresh displayed list immediately so next poll shows the name.
+                runCatching {
+                    val cur = AppState.lanClients.value
+                    AppState.lanClients.value = cur.map { c ->
+                        if (c.id == id || (id.isNotEmpty() && (c.mac.equals(mac, true) && mac.isNotEmpty() || c.ip == ip && ip.isNotEmpty()))) c.copy(name = name)
+                        else c
+                    }
+                }
+                ok = true
+            }
+            val json = if (ok) """{"ok":true}""" else """{"ok":false}"""
+            val bytes = json.toByteArray(Charsets.UTF_8)
+            val header = "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\n" +
+                "Content-Length: ${bytes.size}\r\nConnection: close\r\n\r\n"
+            output.write(header.toByteArray(Charsets.UTF_8))
+            output.write(bytes)
+            output.flush()
+        } catch (_: Exception) {
+        }
+    }
+
     private fun writeStatusJson(output: BufferedOutputStream) {
         val cfg = ConfigManager.load(context)
         val info = AppState.apInfo.value
@@ -212,11 +297,15 @@ class PanelServer(
             append("\"tcpTunnels\":").append(AppState.tcpTunnels.value).append(',')
             append("\"downBps\":").append(AppState.netDownBps).append(',')
             append("\"upBps\":").append(AppState.netUpBps).append(',')
+            append("\"maxBps\":").append(maxOf(AppState.netMaxBps, TrafficStats.maxBps)).append(',')
+            append("\"minBps\":").append(if (AppState.netMinBps > 0) AppState.netMinBps else TrafficStats.minActiveBps).append(',')
             append("\"lanClients\":[")
             AppState.lanClients.value.forEachIndexed { i, c ->
                 if (i > 0) append(',')
                 append("{\"name\":\"").append(escapeJson(c.name)).append("\",")
                 append("\"ip\":\"").append(escapeJson(c.ip)).append("\",")
+                append("\"mac\":\"").append(escapeJson(c.mac)).append("\",")
+                append("\"id\":\"").append(escapeJson(c.id.ifEmpty { DeviceNames.keyFor(c.mac, c.ip) })).append("\",")
                 append("\"mb\":").append((Math.round(c.mb * 10) / 10.0)).append('}')
             }
             append("],")
@@ -374,11 +463,12 @@ class PanelServer(
         return """
         <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
         <title>Ejao Panel</title>
+        <link rel="icon" href="/icon.png">
         ${panelStyle()}
         </head><body>
         <div class="wrap">
         <header class="topbar">
-            <span class="mark">E</span>
+            <img class="mark-img" src="/icon.png" alt="Ejao" width="34" height="34">
             <div style="line-height:1.15"><div class="brand-name">EJAO</div><div class="brand-sub">control panel</div></div>
             <span class="ver">v${BuildConfig.VERSION_NAME}</span>
             <span style="margin-left:auto;display:flex;gap:8px">
@@ -392,7 +482,7 @@ class PanelServer(
                 <div class="stat"><div class="stat-k"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>Uptime</div><div class="stat-v stat-sm mono" id="v-uptime">$uptimeStr</div></div>
                 <div class="stat"><div class="stat-k"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Clients</div><div class="stat-v" id="v-clients">${info.clients}</div></div>
                 <div class="stat"><div class="stat-k"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/></svg>TCP tunnels</div><div class="stat-v" id="v-tunnels">${AppState.tcpTunnels.value}</div></div>
-                <div class="stat"><div class="stat-k"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg>Throughput</div><div class="stat-v stat-sm mono" id="v-rate">—</div><canvas class="spark" id="v-spark" width="220" height="36"></canvas></div>
+                <div class="stat"><div class="stat-k"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg>Throughput</div><div class="stat-v stat-sm mono" id="v-rate">—</div><div class="stat-sub mono" id="v-rateminmax"></div><canvas class="spark" id="v-spark" width="220" height="36"></canvas></div>
             </div>
         </section>
 
@@ -488,7 +578,6 @@ class PanelServer(
           return (bps/1000000).toFixed(1)+' Mb/s';
         }
         var ejaoHist=[];
-        var EJAO_COLS=['var(--text)','#c2410c','var(--text-faint)'];
         function ejaoClients(arr){
           var body=document.getElementById('v-clients-body');
           if(!body) return;
@@ -497,9 +586,7 @@ class PanelServer(
             var e=document.createElement('div');e.className='cli-empty';
             e.textContent='No clients connected.';body.appendChild(e);return;
           }
-          var total=0,i;
-          for(i=0;i<arr.length;i++) total+=arr[i].mb||0;
-          if(total<=0) total=0.001;
+          var i;
           for(i=0;i<arr.length;i++){
             var c=arr[i];
             var row=document.createElement('div');row.className='cli';
@@ -513,29 +600,44 @@ class PanelServer(
             var main=document.createElement('div');main.className='cli-main';
             var t=document.createElement('div');t.className='cli-name';t.textContent=nm;
             var s=document.createElement('div');s.className='cli-sub mono';
-            s.textContent=String(c.ip||'?')+' · '+(Math.round((c.mb||0)*10)/10)+' MB';
+            var sub=String(c.ip||'?')+' · '+(Math.round((c.mb||0)*10)/10)+' MB';
+            if(c.mac) sub+=' · '+c.mac;
+            s.textContent=sub;
             main.appendChild(t);main.appendChild(s);
+            var f=document.createElement('form');f.className='rename';
+            f.setAttribute('data-id',c.id||'');
+            if(c.mac) f.setAttribute('data-mac',c.mac);
+            if(c.ip) f.setAttribute('data-ip',c.ip);
+            f.onsubmit=function(){return ejaoRename(this);};
+            var inp=document.createElement('input');inp.className='rename-input';
+            inp.name='name';inp.maxLength=32;inp.placeholder='Rename';
+            var btn=document.createElement('button');btn.className='mini-btn';btn.type='submit';btn.textContent='Save';
+            f.appendChild(inp);f.appendChild(btn);main.appendChild(f);
             var act=document.createElement('span');act.className='cli-active';act.textContent='active';
             row.appendChild(av);row.appendChild(main);row.appendChild(act);
             body.appendChild(row);
           }
-          var head=document.createElement('div');head.className='split-head';head.textContent='Data split';
-          var bar=document.createElement('div');bar.className='split';
-          var leg=document.createElement('div');leg.className='split-legend';
-          for(i=0;i<arr.length;i++){
-            var pct=Math.max(0,Math.min(100,(arr[i].mb||0)/total*100));
-            var seg=document.createElement('div');
-            seg.style.width=(Math.round(pct*10)/10)+'%';
-            seg.style.background=EJAO_COLS[i%EJAO_COLS.length];
-            bar.appendChild(seg);
-            var li=document.createElement('span');
-            li.textContent=String(arr[i].name||'?')+' '+Math.round(pct)+'%';
-            leg.appendChild(li);
-          }
-          body.appendChild(head);body.appendChild(bar);body.appendChild(leg);
         }
-        function ejaoRate(total){          var e=document.getElementById('v-rate');
+        function ejaoRename(form){
+          try{
+            var id=form.getAttribute('data-id')||'';
+            var mac=form.getAttribute('data-mac')||'';
+            var ip=form.getAttribute('data-ip')||'';
+            var inp=form.querySelector('input[name=name]');
+            var name=inp?inp.value.trim():'';
+            if(!id||!name) return false;
+            var body='id='+encodeURIComponent(id)+'&mac='+encodeURIComponent(mac)+'&ip='+encodeURIComponent(ip)+'&name='+encodeURIComponent(name);
+            fetch('/rename',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body}).then(function(){ejaoRefresh();}).catch(function(){});
+          }catch(e){}
+          return false;
+        }
+        function ejaoRate(total,maxBps,minBps){          var e=document.getElementById('v-rate');
           if(e) e.textContent=ejaoFmtRate(total);
+          var mm=document.getElementById('v-rateminmax');
+          if(mm){
+            if(maxBps>0||minBps>0) mm.textContent='max '+ejaoFmtRate(maxBps||0)+' · min '+ejaoFmtRate(minBps||0);
+            else mm.textContent='';
+          }
           ejaoHist.push(total||0);
           while(ejaoHist.length>24) ejaoHist.shift();
           var c=document.getElementById('v-spark');
@@ -606,7 +708,7 @@ class PanelServer(
             var pe=document.getElementById('v-pass');
             if(pe){pe.setAttribute('data-real',d.passphrase);if(pwShown){pe.textContent=d.passphrase;}}
             set('v-goip',d.goIp);set('v-clients',d.clients);set('v-tunnels',d.tcpTunnels);
-            ejaoRate((d.downBps||0)+(d.upBps||0));
+            ejaoRate((d.downBps||0)+(d.upBps||0),d.maxBps||0,d.minBps||0);
             ejaoClients(d.lanClients||[]);
             ejaoDot(d.running);
             ejaoTick();
@@ -614,7 +716,7 @@ class PanelServer(
         }
         ejaoRefresh();
         ejaoStartStream();
-        setInterval(ejaoRefresh,2000);
+        setInterval(ejaoRefresh,1000);
         setInterval(ejaoTick,1000);
         </script>
         </body></html>
@@ -654,6 +756,10 @@ class PanelServer(
           padding:4px 2px 16px;border-bottom:1px solid var(--line);margin-bottom:16px}
         .mark{width:34px;height:34px;border-radius:9px;background:var(--text);color:var(--bg);
           display:inline-grid;place-items:center;font-weight:800;font-size:16px;flex-shrink:0}
+        .mark-img{width:34px;height:34px;border-radius:9px;flex-shrink:0}
+        .rename{display:flex;gap:6px;margin-top:8px}
+        .rename-input{flex:1;min-width:0;padding:7px 9px;border-radius:8px;border:1px solid var(--line);
+          background:var(--bg);color:var(--text);font-size:12px}
         [data-theme="dark"] .mark{background:#f5f2ee;color:#171412}
         .brand-name{font-weight:800;font-size:16px;letter-spacing:0.06em}
         .brand-sub{color:var(--text-faint);font-size:12px}
@@ -765,30 +871,22 @@ class PanelServer(
     private fun clientRows(): String {
         val list = AppState.lanClients.value
         if (list.isEmpty()) return "<div class=\"cli-empty\">No clients connected.</div>"
-        val total = list.sumOf { it.mb }.coerceAtLeast(0.001)
         val sb = StringBuilder()
         list.forEachIndexed { i, c ->
             val initial = c.name.firstOrNull { it.isLetterOrDigit() }?.uppercaseChar() ?: '?'
             val bg = if (i % 2 == 0) "background:var(--text);color:var(--bg)" else "background:#c2410c;color:#fff"
+            val id = escapeHtml(c.id.ifEmpty { DeviceNames.keyFor(c.mac, c.ip) })
             sb.append("<div class=\"cli\"><span class=\"avatar\" style=\"").append(bg).append("\">").append(initial)
             sb.append("</span><div class=\"cli-main\"><div class=\"cli-name\">").append(escapeHtml(c.name))
             sb.append("</div><div class=\"cli-sub mono\">").append(escapeHtml(c.ip)).append(" · ")
-            sb.append(Math.round(c.mb * 10) / 10.0).append(" MB</div></div>")
-            sb.append("<span class=\"cli-active\">active</span></div>")
+            sb.append(Math.round(c.mb * 10) / 10.0).append(" MB")
+            if (c.mac.isNotEmpty()) sb.append(" · ").append(escapeHtml(c.mac))
+            sb.append("</div>")
+            sb.append("<form class=\"rename\" onsubmit=\"return ejaoRename(this)\" data-id=\"").append(id).append("\">")
+            sb.append("<input class=\"rename-input\" name=\"name\" maxlength=\"32\" placeholder=\"Rename\" value=\"\">")
+            sb.append("<button class=\"mini-btn\" type=\"submit\">Save</button></form>")
+            sb.append("</div><span class=\"cli-active\">active</span></div>")
         }
-        sb.append("<div class=\"split-head\">Data split</div><div class=\"split\">")
-        val cols = listOf("var(--text)", "#c2410c", "var(--text-faint)")
-        list.forEachIndexed { i, c ->
-            val pct = (c.mb / total * 100).coerceIn(0.0, 100.0)
-            sb.append("<div style=\"width:").append(Math.round(pct * 10) / 10.0)
-            sb.append("%;background:").append(cols[i % cols.size]).append("\"></div>")
-        }
-        sb.append("</div><div class=\"split-legend\">")
-        list.forEach { c ->
-            val pct = Math.round(c.mb / total * 100)
-            sb.append("<span>").append(escapeHtml(c.name)).append(" ").append(pct).append("%</span>")
-        }
-        sb.append("</div>")
         return sb.toString()
     }
 

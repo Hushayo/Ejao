@@ -22,13 +22,17 @@ object AppState {
     var serviceStartedAt: Long = 0L
     @Volatile var netDownBps: Long = 0L
     @Volatile var netUpBps: Long = 0L
+    @Volatile var netMaxBps: Long = 0L
+    @Volatile var netMinBps: Long = 0L
     val lanClients = MutableStateFlow<List<LanClient>>(emptyList())
 }
 
 data class LanClient(
     val name: String = "",
     val ip: String = "",
-    val mb: Double = 0.0
+    val mb: Double = 0.0,
+    val mac: String = "",
+    val id: String = ""
 )
 
 object ClientUsage {
