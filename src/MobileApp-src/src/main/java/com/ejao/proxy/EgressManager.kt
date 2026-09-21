@@ -132,6 +132,10 @@ object EgressManager {
 
     fun clearDns() = dnsCache.clear()
 
+    fun clearDnsHost(host: String) {
+        runCatching { dnsCache.remove(host) }
+    }
+
     fun invalidateCache() {
         synchronized(lock) {
             cachedNet = null
@@ -158,6 +162,11 @@ object EgressManager {
             s.consecutiveFails++
             if (s.consecutiveFails >= HOST_FAIL_THRESHOLD) {
                 s.preferDefaultUntil = System.currentTimeMillis() + PIN_MS
+                // Drop the cached DNS for this host: after a handover the
+                // old IP can be dead, and replaying it for the full 60s TTL
+                // turns one blip into a burst of Proxifier "close" + fake-IP
+                // errors. Next attempt re-resolves on the fresh network.
+                runCatching { dnsCache.remove(host) }
             }
         }
     }

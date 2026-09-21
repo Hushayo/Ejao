@@ -83,6 +83,10 @@ class ProxyService : Service() {
     private var startedAt: Long = 0L
     private var pipelineJob: Job? = null
     private val pipelineGen = AtomicInteger(0)
+    // Serializes panel restarts: double-taps + file-watcher + stale-heal must
+    // never run overlapping restarts (overlapping removeGroup/createGroup =
+    // BUSY failures that used to kill the service after long uptime).
+    private val restartGuard = AtomicBoolean(false)
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -160,51 +164,114 @@ class ProxyService : Service() {
             }
             Log.i(TAG, "proxy starting wifiOk=$wifiOk port=${config.port}")
 
+            // Group creation is flaky after long uptime (stale P2P channel,
+            // slow removeGroup, BUSY from a previous attempt). Retry several
+            // times with backoff instead of stopSelf() on the first failure -
+            // stopSelf() used to kill the service + cancel the watchdog, so
+            // one slow callback meant manual restart at the phone.
             updateStatus("Creating WiFi Direct group...")
-            val createOk = AtomicBoolean(false)
-            var createMsg = ""
-            p2p.removeExistingGroup {
-                val band = if (config.disableBandSelector) "2.4" else config.band
-                p2p.createGroup(config.ssid, config.password, band) { ok, msg ->
-                    createMsg = msg
-                    createOk.set(ok)
-                    Log.i(TAG, "createGroup result ok=$ok msg=$msg band=$band")
-                }
-            }
-            var waited = 0
-            while (!createOk.get() && waited < 5000) {
-                delay(200); waited += 200
-            }
-            Log.i(TAG, "createGroup waited=${waited}ms ok=${createOk.get()} msg=$createMsg")
-            if (!createOk.get()) {
-                Log.e(TAG, "proxy_error: $createMsg")
-                updateStatus("ERROR: $createMsg")
-                stopSelf()
-                return
-            }
-
             var groupSsid = ""
             var groupPass = ""
-            val formed = AtomicBoolean(false)
-            for (i in 0 until 60) {
-                delay(500)
-                val got = AtomicBoolean(false)
-                p2p.requestGroupInfo { g ->
-                    got.set(true)
-                    if (g != null) {
-                        formed.set(true)
-                        groupSsid = g.networkName
-                        groupPass = g.passphrase
+            var groupReady = false
+            var lastCreateMsg = ""
+            val maxGroupAttempts = 5
+            var attempt = 0
+            while (!groupReady && attempt < maxGroupAttempts) {
+                if (!started.get() || pipelineGen.get() != myGen) return
+                attempt++
+                // Fresh manager per attempt: the old channel can go stale
+                // after hours in Doze; a new initialize() recovers it.
+                val attemptP2p = if (attempt == 1) p2p else WifiDirectManager(this)
+                val createOk = AtomicBoolean(false)
+                var createMsg = ""
+                val removeDone = AtomicBoolean(false)
+                runCatching {
+                    attemptP2p.removeExistingGroup {
+                        removeDone.set(true)
+                        val band = if (config.disableBandSelector) "2.4" else config.band
+                        attemptP2p.createGroup(config.ssid, config.password, band) { ok, msg ->
+                            createMsg = msg
+                            createOk.set(ok)
+                            Log.i(TAG, "createGroup attempt=$attempt result ok=$ok msg=$msg band=$band")
+                        }
                     }
                 }
-                var loop = 0
-                while (!got.get() && loop < 20) { delay(50); loop++ }
-                if (formed.get()) break
+                // If removeExistingGroup's callback never arrives (dead
+                // channel), don't hang forever: fall through and try create
+                // directly after a timeout.
+                var removeWaited = 0
+                while (!removeDone.get() && !createOk.get() && removeWaited < 5000) {
+                    delay(200); removeWaited += 200
+                }
+                if (!removeDone.get() && !createOk.get()) {
+                    Log.w(TAG, "removeExistingGroup callback timed out (attempt $attempt) - trying createGroup directly")
+                    runCatching {
+                        val band = if (config.disableBandSelector) "2.4" else config.band
+                        attemptP2p.createGroup(config.ssid, config.password, band) { ok, msg ->
+                            createMsg = msg
+                            createOk.set(ok)
+                            Log.i(TAG, "createGroup direct attempt=$attempt ok=$ok msg=$msg")
+                        }
+                    }
+                }
+                var waited = 0
+                while (!createOk.get() && waited < 15000) {
+                    delay(200); waited += 200
+                }
+                Log.i(TAG, "createGroup attempt=$attempt waited=${waited}ms ok=${createOk.get()} msg=$createMsg")
+                lastCreateMsg = createMsg
+                if (!createOk.get()) {
+                    updateStatus("Group create failed (attempt $attempt/$maxGroupAttempts) - retrying...")
+                    delay(3000L * attempt)
+                    continue
+                }
+
+                val formed = AtomicBoolean(false)
+                var tmpSsid = ""
+                var tmpPass = ""
+                for (i in 0 until 90) {
+                    delay(500)
+                    if (!started.get() || pipelineGen.get() != myGen) return
+                    val got = AtomicBoolean(false)
+                    runCatching {
+                        attemptP2p.requestGroupInfo { g ->
+                            got.set(true)
+                            if (g != null) {
+                                formed.set(true)
+                                tmpSsid = g.networkName
+                                tmpPass = g.passphrase
+                            }
+                        }
+                    }
+                    var loop = 0
+                    while (!got.get() && loop < 20) { delay(50); loop++ }
+                    if (formed.get()) break
+                }
+                if (!formed.get()) {
+                    Log.w(TAG, "group did not form (attempt $attempt/$maxGroupAttempts) - retrying")
+                    updateStatus("Group did not form (attempt $attempt/$maxGroupAttempts) - retrying...")
+                    // Tear down the half-created group before the next try,
+                    // otherwise the next create gets BUSY.
+                    runCatching { attemptP2p.removeGroup { } }
+                    delay(3000L * attempt)
+                    continue
+                }
+                groupSsid = tmpSsid
+                groupPass = tmpPass
+                groupReady = true
             }
-            if (!formed.get()) {
-                Log.e(TAG, "proxy_error: group did not form")
-                updateStatus("ERROR: group did not form")
-                stopSelf()
+            if (!groupReady) {
+                // Stay alive with the backup panel (still bound to 0.0.0.0)
+                // so the user can hit Restart again from the phone or backup
+                // panel. Never stopSelf() here - that used to cancel the
+                // watchdog + shouldRun, requiring a manual trip to the host.
+                Log.e(TAG, "proxy_error: group failed after $maxGroupAttempts attempts: $lastCreateMsg")
+                updateStatus("ERROR: $lastCreateMsg (retries exhausted) - backup panel still up, tap Restart again")
+                runCatching { scheduleWatchdog(this) }
+                // Park the pipeline without killing the service; a new
+                // restart (panel button, file change) bumps pipelineGen and
+                // supersedes this generation.
+                while (started.get() && pipelineGen.get() == myGen) delay(5000)
                 return
             }
 
@@ -747,11 +814,22 @@ class ProxyService : Service() {
 
     private fun restartProxy() {
         if (!started.get()) return
+        // Drop overlapping restarts: panel double-tap / file-watcher /
+        // stale-heal racing removeGroup+createGroup was the main source of
+        // BUSY -> stopSelf -> dead-until-manual after long sessions.
+        if (!restartGuard.compareAndSet(false, true)) {
+            Log.i(TAG, "restart already in progress - ignoring duplicate request")
+            return
+        }
         scope.launch {
             val myGen = pipelineGen.incrementAndGet()
             try {
                 Log.i(TAG, "proxy_restart reason=config_changed")
-                updateStatus("Config changed, restarting...")
+                updateStatus("Restarting proxy...")
+                runCatching { ProxyState.setShouldRun(this@ProxyService, true) }
+                runCatching { scheduleWatchdog(this@ProxyService) }
+                // Re-assert locks: after hours the OS may have dropped them.
+                runCatching { acquireLocks() }
                 runCatching {
                     pipelineJob?.cancel()
                     pipelineJob?.join()
@@ -761,6 +839,9 @@ class ProxyService : Service() {
                 runCatching { socks4?.stop() }
                 runCatching { http?.stop() }
                 runCatching { panel?.stop() }
+                // NOTE: backupPanel is deliberately NOT stopped - it stays
+                // reachable at :8284 throughout the restart so a failed
+                // restart never strands the user with no way back.
                 socks = null
                 socks4 = null
                 http = null
@@ -771,13 +852,18 @@ class ProxyService : Service() {
                     val p2p = WifiDirectManager(this@ProxyService)
                     p2p.removeGroup { }
                 }
-                delay(1500)
+                // Give the driver + sockets time to release after a long
+                // session (1.5s was too short -> BUSY / bind conflicts).
+                delay(3000)
                 if (pipelineGen.get() != myGen || !started.get()) return@launch
                 pipelineJob = scope.launch { runPipeline(myGen) }
             } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) return@launch
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 Log.e(TAG, "restart failed", e)
-                runCatching { updateStatus("ERROR: restart failed (${e.message})") }
+                runCatching { updateStatus("ERROR: restart failed (${e.message}) - backup panel still up, tap Restart again") }
+                runCatching { scheduleWatchdog(this@ProxyService) }
+            } finally {
+                restartGuard.set(false)
             }
         }
     }
@@ -822,7 +908,11 @@ class ProxyService : Service() {
             wakeLock = runCatching {
                 pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Ejao:proxy").apply {
                     setReferenceCounted(false)
-                    acquire(10 * 60 * 60 * 1000L)
+                    // Indefinite hold (no timeout): the old 10h timeout silently
+                    // released the lock on long sessions, letting the CPU sleep
+                    // so P2P callbacks stalled and panel restarts died.
+                    // Released explicitly in releaseLocks()/onDestroy().
+                    acquire()
                 }
             }.getOrNull()
             val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager

@@ -437,7 +437,20 @@ class Socks5Server(
             }
             session.lastActivity = System.currentTimeMillis()
             try {
-                val dstAddr = resolve(dstHost, net).first()
+                // Same 3-step fallback as TCP CONNECT: picked net, then fresh
+                // cellular, then system default. UDP previously tried only the
+                // picked net, so after a handover every datagram was dropped
+                // until something else re-picked the network.
+                val dstAddr = try {
+                    resolve(dstHost, net).first()
+                } catch (_: Exception) {
+                    val fresh = runCatching { NetworkUtils.pickCellular(cm, null) }.getOrNull()
+                        ?.takeIf { it != net }
+                    val freshAddr = if (fresh != null) {
+                        runCatching { resolve(dstHost, fresh).first() }.getOrNull()
+                    } else null
+                    freshAddr ?: resolve(dstHost, null).first()
+                }
                 try {
                     session.socket.send(DatagramPacket(payload, payload.size, dstAddr, dstPort))
                     session.tx.addAndGet(payload.size.toLong())

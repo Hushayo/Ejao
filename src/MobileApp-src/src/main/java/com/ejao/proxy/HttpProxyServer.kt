@@ -352,6 +352,7 @@ class HttpProxyServer(
                 return
             } catch (e: Exception) {
                 runCatching { upstream?.close() }
+                if (!local) evictHost(host, port)
                 if (attempt == 0 && canRetry && !committed) continue
                 onLog("HTTP fail $host:$port: ${e.message}")
                 if (!local) reportRequest(host, port, method, "fail", System.currentTimeMillis() - t0)
@@ -445,13 +446,25 @@ class HttpProxyServer(
             if (pool != null) {
                 synchronized(pool) {
                     val now = System.currentTimeMillis()
-                    pool.removeAll { it.second + poolIdleMs < now || it.first.isClosed }
+                    // Drop idle-expired, closed, or half-shutdown sockets: after
+                    // hours the carrier/NAT silently kills idle upstreams and
+                    // the next GET would fail once on a dead reuse before the
+                    // retry. Stricter check here avoids that one failed hit.
+                    pool.removeAll {
+                        it.second + poolIdleMs < now || it.first.isClosed ||
+                            !it.first.isConnected || it.first.isInputShutdown ||
+                            it.first.isOutputShutdown
+                    }
                     val entry = pool.removeLastOrNull()
                     if (entry != null) reused = entry.first
                 }
             }
-            if (reused != null && !reused.isClosed && reused.isConnected) {
+            if (reused != null && !reused.isClosed && reused.isConnected &&
+                !reused.isInputShutdown && !reused.isOutputShutdown
+            ) {
                 return reused
+            } else if (reused != null) {
+                runCatching { reused.close() }
             }
         }
         val net = pickNet(host)
@@ -506,6 +519,21 @@ class HttpProxyServer(
 
     private fun clearDns() {
         EgressManager.clearDns()
+    }
+
+    // Drop all pooled sockets for one host after it fails: keeps one dead
+    // origin (e.g. after a cellular handover) from poisoning the next
+    // requests while leaving other hosts' warm connections intact.
+    private fun evictHost(host: String, port: Int) {
+        runCatching {
+            connPool["$host:$port"]?.let { list ->
+                synchronized(list) {
+                    for ((sock, _) in list) runCatching { sock.close() }
+                    list.clear()
+                }
+            }
+        }
+        EgressManager.clearDnsHost(host)
     }
 
     private fun writeResponseHeaders(
