@@ -132,7 +132,7 @@ jobs:
             --notes "Automatic build from commit ${{ github.sha }} | SHA256: $SHA256"
 
       - name: Upload APK
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: ejao-udp-bridge-apk
           path: src/MobileApp-src/build/outputs/apk/release/ejao.apk
