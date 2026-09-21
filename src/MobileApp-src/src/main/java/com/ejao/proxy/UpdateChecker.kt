@@ -83,7 +83,13 @@ object UpdateChecker {
         }
     }
 
-    /** Downloads the release APK for [tag], overwriting any previous download. */
+    /**
+     * Downloads the release APK for [tag], overwriting any previous download,
+     * then verifies its SHA-256 against the published `ejao.apk.sha256`
+     * asset. Returns null (and deletes the file) when the hash can't be
+     * fetched or doesn't match - a tampered/mirrored APK must never reach
+     * the installer.
+     */
     fun downloadApk(context: Context, tag: String, onProgress: (Int) -> Unit = {}): File? {
         return try {
             val base = context.getExternalFilesDir(null) ?: context.filesDir
@@ -111,16 +117,64 @@ object UpdateChecker {
                         }
                     }
                 }
-                file
             } catch (_: Exception) {
                 runCatching { file.delete() }
-                null
+                return null
+            } finally {
+                runCatching { conn.disconnect() }
+            }
+            if (!verifyApkHash(file, tag)) {
+                runCatching { file.delete() }
+                return null
+            }
+            file
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** Fetches `ejao.apk.sha256` for [tag] and compares it to [file]. */
+    fun verifyApkHash(file: File, tag: String): Boolean {
+        return try {
+            if (!file.exists() || file.length() == 0L) return false
+            val expected = fetchExpectedHash(tag) ?: return false
+            sha256Hex(file).equals(expected, ignoreCase = true)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun fetchExpectedHash(tag: String): String? {
+        return try {
+            val conn = URL("https://github.com/Hushayo/Ejao/releases/download/$tag/ejao.apk.sha256")
+                .openConnection() as HttpURLConnection
+            conn.requestMethod = "GET"
+            conn.setRequestProperty("User-Agent", "Ejao-App")
+            conn.connectTimeout = 10000
+            conn.readTimeout = 10000
+            try {
+                if (conn.responseCode !in 200..299) return null
+                // Format: "<hex>  ejao.apk" (sha256sum output).
+                val body = conn.inputStream.bufferedReader().use { it.readText() }
+                Regex("""\b[0-9a-fA-F]{64}\b""").find(body)?.value?.lowercase()
             } finally {
                 runCatching { conn.disconnect() }
             }
         } catch (_: Exception) {
             null
         }
+    }
+
+    private fun sha256Hex(file: File): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(8192)
+            var read: Int
+            while (input.read(buffer).also { read = it } != -1) {
+                digest.update(buffer, 0, read)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     fun downloadedApkFile(context: Context): File {

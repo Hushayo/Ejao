@@ -41,7 +41,11 @@ object EgressManager {
     private var proberJob: Job? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    private val dnsExecutor = Executors.newFixedThreadPool(16)
+    // Recreatable so shutdown() is honest: the old code kept one pool for the
+    // process lifetime (bounded one-time cost, but shutdown() claimed to reset
+    // everything while the pool + its threads survived). Now shutdown drains
+    // it and the next resolve() lazily builds a fresh one under lock.
+    private var dnsExecutor = Executors.newFixedThreadPool(16)
     private val dnsCache = ConcurrentHashMap<String, Pair<List<InetAddress>, Long>>()
 
     private data class HostStat(
@@ -111,9 +115,19 @@ object EgressManager {
     fun resolve(host: String, net: Network?): List<InetAddress> {
         val now = System.currentTimeMillis()
         dnsCache[host]?.let { if (it.second > now) return it.first }
-        val future = dnsExecutor.submit<List<InetAddress>> {
-            (if (net != null) net.getAllByName(host) else InetAddress.getAllByName(host))
-                ?.toList().orEmpty()
+        val exec = synchronized(lock) {
+            if (dnsExecutor.isShutdown || dnsExecutor.isTerminated) {
+                dnsExecutor = Executors.newFixedThreadPool(16)
+            }
+            dnsExecutor
+        }
+        val future = try {
+            exec.submit<List<InetAddress>> {
+                (if (net != null) net.getAllByName(host) else InetAddress.getAllByName(host))
+                    ?.toList().orEmpty()
+            }
+        } catch (e: Exception) {
+            throw IOException("DNS submit failed for $host via $net", e)
         }
         val addrs = try {
             future.get(DNS_TIMEOUT_MS, TimeUnit.MILLISECONDS)
@@ -257,6 +271,9 @@ object EgressManager {
             cachedNetTime = 0L
             initialized = false
             cmRef = null
+            // Drain the DNS pool so restart cycles don't accumulate threads.
+            // resolve() recreates it lazily on next use.
+            runCatching { dnsExecutor.shutdownNow() }
         }
         hostStats.clear()
         dnsCache.clear()

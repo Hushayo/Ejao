@@ -43,14 +43,17 @@ class PanelServer(
     private val onLog: (String) -> Unit = {},
     private val onRestartRequest: () -> Unit = {}
 ) {
-    // Small dedicated pool. The panel is low-traffic (a few requests + an SSE
-    // stream held open by one browser tab); it must never compete with the
-    // proxy's worker pool, which is exactly why it gets its own executor here.
-    // 32 (not 16): an open /api/stream connection parks one thread for as long
-    // as the panel tab stays open, so the pool needs headroom for other panel
-    // requests (settings saves, restarts) to still get served concurrently.
-    private val workerExecutor = Executors.newFixedThreadPool(32)
+    // Small dedicated pool. The panel is low-traffic (a few requests); it must
+    // never compete with the proxy's worker pool, which is exactly why it
+    // gets its own executor here.
+    private val workerExecutor = Executors.newFixedThreadPool(16)
     private val scope = CoroutineScope(SupervisorJob() + workerExecutor.asCoroutineDispatcher())
+    // SSE streams get their own lane: an open /api/stream tab parks its
+    // handler for up to 5 min, and parking pool workers meant enough tabs
+    // could starve settings saves + restarts - the exact starvation this
+    // separate panel server was built to avoid.
+    private val sseExecutor = Executors.newCachedThreadPool()
+    private val sseDispatcher = sseExecutor.asCoroutineDispatcher()
     private val running = AtomicBoolean(true)
     private var serverSocket: ServerSocket? = null
     private var tcpJob: Job? = null
@@ -70,6 +73,7 @@ class PanelServer(
         tcpJob?.cancel()
         scope.cancel()
         runCatching { workerExecutor.shutdownNow() }
+        runCatching { sseExecutor.shutdownNow() }
     }
 
     private fun tuneSocket(sock: Socket) {
@@ -146,7 +150,8 @@ class PanelServer(
                 return
             }
             if (target == "/api/stream") {
-                streamStatusSse(client, output)
+                // Park the SSE lane, not a pool worker (see sseDispatcher).
+                kotlinx.coroutines.withContext(sseDispatcher) { streamStatusSse(client, output) }
                 return
             }
             if (target.substringBefore("?") == "/icon.png" || target.substringBefore("?") == "/favicon.ico") {
@@ -297,6 +302,7 @@ class PanelServer(
             append("\"tcpTunnels\":").append(AppState.tcpTunnels.value).append(',')
             append("\"downBps\":").append(AppState.netDownBps).append(',')
             append("\"upBps\":").append(AppState.netUpBps).append(',')
+            append("\"ipv6Drops\":").append(TrafficStats.ipv6UdpDrops.get()).append(',')
             append("\"maxBps\":").append(maxOf(AppState.netMaxBps, TrafficStats.maxBps)).append(',')
             append("\"minBps\":").append(if (AppState.netMinBps > 0) AppState.netMinBps else TrafficStats.minActiveBps).append(',')
             append("\"lanClients\":[")
@@ -400,24 +406,30 @@ class PanelServer(
     /**
      * Reads a single CRLF/LF-terminated header line from [ins]. Reads one byte at
      * a time so it never overtakes the [BufferedInputStream] used for the body.
+     * Decodes as UTF-8 (not Latin-1): request targets carrying non-ASCII
+     * (e.g. rename `name=` values echoed in redirects) used to garble.
+     * Over-long lines are rejected to bound memory.
      */
     private fun readLine(ins: InputStream): String? {
-        val sb = StringBuilder()
+        val raw = java.io.ByteArrayOutputStream()
         var prev = -1
         while (true) {
             val b = ins.read()
             if (b == -1) {
-                if (sb.isEmpty()) return null
+                if (raw.size() == 0) return null
                 break
             }
-            if (b == '\n'.code) {
-                if (prev == '\r'.code) sb.setLength(sb.length - 1)
-                break
-            }
-            sb.append(b.toChar())
+            if (b == '\n'.code) break
+            raw.write(b)
+            if (raw.size() > 32 * 1024) throw IOException("header line too large")
             prev = b
         }
-        return sb.toString()
+        var bytes = raw.toByteArray()
+        // Strip a trailing CR (CRLF terminator).
+        if (bytes.isNotEmpty() && bytes.last() == '\r'.code.toByte()) {
+            bytes = bytes.copyOf(bytes.size - 1)
+        }
+        return String(bytes, Charsets.UTF_8)
     }
 
     private fun urlDecode(s: String): String = try {
@@ -631,12 +643,14 @@ class PanelServer(
           }catch(e){}
           return false;
         }
-        function ejaoRate(total,maxBps,minBps){          var e=document.getElementById('v-rate');
+        function ejaoRate(total,maxBps,minBps,ipv6Drops){          var e=document.getElementById('v-rate');
           if(e) e.textContent=ejaoFmtRate(total);
           var mm=document.getElementById('v-rateminmax');
           if(mm){
-            if(maxBps>0||minBps>0) mm.textContent='max '+ejaoFmtRate(maxBps||0)+' · min '+ejaoFmtRate(minBps||0);
-            else mm.textContent='';
+            var txt='';
+            if(maxBps>0||minBps>0) txt='max '+ejaoFmtRate(maxBps||0)+' · min '+ejaoFmtRate(minBps||0);
+            if(ipv6Drops>0) txt+=(txt?' · ':'')+'IPv6 dropped '+ipv6Drops+' (IPv4-only proxy)';
+            mm.textContent=txt;
           }
           ejaoHist.push(total||0);
           while(ejaoHist.length>24) ejaoHist.shift();
@@ -708,7 +722,7 @@ class PanelServer(
             var pe=document.getElementById('v-pass');
             if(pe){pe.setAttribute('data-real',d.passphrase);if(pwShown){pe.textContent=d.passphrase;}}
             set('v-goip',d.goIp);set('v-clients',d.clients);set('v-tunnels',d.tcpTunnels);
-            ejaoRate((d.downBps||0)+(d.upBps||0),d.maxBps||0,d.minBps||0);
+            ejaoRate((d.downBps||0)+(d.upBps||0),d.maxBps||0,d.minBps||0,d.ipv6Drops||0);
             ejaoClients(d.lanClients||[]);
             ejaoDot(d.running);
             ejaoTick();

@@ -199,7 +199,7 @@ object ConfigManager {
                 disableBandSelector = p.getProperty("disable_band_selector", defaultConfig.disableBandSelector.toString()).toBoolean(),
                 proxyMode = p.getProperty("proxy_mode", defaultConfig.proxyMode)
                     .ifBlank { defaultConfig.proxyMode },
-                proxyType = p.getProperty("proxy_type", "0").toIntOrNull() ?: 0,
+                proxyType = p.getProperty("proxy_type", "0").toIntOrNull()?.coerceIn(0, 3) ?: 0,
                 httpPort = p.getProperty("http_port", defaultConfig.httpPort.toString()).toIntOrNull()
                     ?.coerceIn(1, 65535) ?: defaultConfig.httpPort,
                 socks4Port = p.getProperty("socks4_port", defaultConfig.socks4Port.toString()).toIntOrNull()

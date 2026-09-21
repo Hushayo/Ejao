@@ -75,8 +75,11 @@ class WifiDirectManager(private val context: Context) {
     /**
      * Try to auto-enable WiFi. On Android 13+ setWifiEnabled is blocked for apps,
      * so failure here is NOT fatal - we proceed and let createGroup decide.
+     *
+     * Suspend (not blocking): the old Thread.sleep loop pinned an IO worker
+     * for up to 15s per call.
      */
-    fun ensureWifiOn(timeoutMs: Long = 15000): Boolean {
+    suspend fun ensureWifiOn(timeoutMs: Long = 15000): Boolean {
         val wifi = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         if (wifi.isWifiEnabled) return true
         try {
@@ -86,7 +89,7 @@ class WifiDirectManager(private val context: Context) {
         }
         val start = System.currentTimeMillis()
         while (!wifi.isWifiEnabled && System.currentTimeMillis() - start < timeoutMs) {
-            Thread.sleep(300)
+            kotlinx.coroutines.delay(300)
         }
         return wifi.isWifiEnabled
     }

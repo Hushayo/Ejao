@@ -5,6 +5,9 @@ import java.util.concurrent.atomic.AtomicLong
 object TrafficStats {
     val rxBytes = AtomicLong(0L)
     val txBytes = AtomicLong(0L)
+    // UDP datagrams dropped because the target is IPv6 (egress is IPv4-only).
+    // Surfaced in the panel so "Edge keeps spinning" has a visible cause.
+    val ipv6UdpDrops = AtomicLong(0L)
     @Volatile var rxBps = 0L
     @Volatile var txBps = 0L
     @Volatile var maxBps = 0L
@@ -15,6 +18,9 @@ object TrafficStats {
 
     fun addRx(n: Long) { if (n > 0) rxBytes.addAndGet(n) }
     fun addTx(n: Long) { if (n > 0) txBytes.addAndGet(n) }
+
+    /** Returns the new total. */
+    fun countIpv6Drop(): Long = ipv6UdpDrops.incrementAndGet()
 
     @Synchronized fun sampleNow(): Pair<Long, Long> {
         val now = System.currentTimeMillis()
@@ -46,6 +52,7 @@ object TrafficStats {
     fun reset() {
         rxBytes.set(0)
         txBytes.set(0)
+        ipv6UdpDrops.set(0)
         rxBps = 0
         txBps = 0
         maxBps = 0

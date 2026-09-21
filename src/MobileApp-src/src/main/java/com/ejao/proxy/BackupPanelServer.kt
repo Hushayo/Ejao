@@ -373,23 +373,24 @@ class BackupPanelServer(
         output.flush()
     }
 
+    // UTF-8 decode (not Latin-1) + length cap, mirroring PanelServer.readLine.
     private fun readLine(ins: InputStream): String? {
-        val sb = StringBuilder()
-        var prev = -1
+        val raw = java.io.ByteArrayOutputStream()
         while (true) {
             val b = ins.read()
             if (b == -1) {
-                if (sb.isEmpty()) return null
+                if (raw.size() == 0) return null
                 break
             }
-            if (b == '\n'.code) {
-                if (prev == '\r'.code) sb.setLength(sb.length - 1)
-                break
-            }
-            sb.append(b.toChar())
-            prev = b
+            if (b == '\n'.code) break
+            raw.write(b)
+            if (raw.size() > 32 * 1024) throw java.io.IOException("header line too large")
         }
-        return sb.toString()
+        var bytes = raw.toByteArray()
+        if (bytes.isNotEmpty() && bytes.last() == '\r'.code.toByte()) {
+            bytes = bytes.copyOf(bytes.size - 1)
+        }
+        return String(bytes, Charsets.UTF_8)
     }
 
     private fun escapeHtml(s: String): String = s

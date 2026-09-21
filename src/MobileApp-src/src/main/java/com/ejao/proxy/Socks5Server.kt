@@ -102,6 +102,7 @@ class Socks5Server(
     }
 
     private val udpSessions = ConcurrentHashMap<String, UdpSession>()
+    private val lastIpv6DropLogMs = AtomicLong(0L)
 
     private class UdpSession(val socket: DatagramSocket) {
         @Volatile var lastActivity = System.currentTimeMillis()
@@ -392,7 +393,18 @@ class Socks5Server(
                     dstHost = String(data, idx, len)
                     idx += len
                 }
-                0x04 -> return // IPv6 targets unsupported
+                0x04 -> {
+                    // IPv6 targets unsupported (IPv4-only egress): count it so
+                    // the panel can show WHY Edge/QUIC keeps spinning, and log
+                    // at most once a minute so long sessions don't spam.
+                    val total = TrafficStats.countIpv6Drop()
+                    val now = System.currentTimeMillis()
+                    val last = lastIpv6DropLogMs.get()
+                    if (now - last > 60_000 && lastIpv6DropLogMs.compareAndSet(last, now)) {
+                        onLog("UDP IPv6 target dropped (IPv4-only egress, total=$total) - disable IPv6 on the PC adapter to silence")
+                    }
+                    return
+                }
                 else -> return
             }
             val dstPort = ((data[idx].toInt() and 0xff) shl 8) or (data[idx + 1].toInt() and 0xff)

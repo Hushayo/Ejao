@@ -124,6 +124,20 @@ class ProxyService : Service() {
                 keepAliveJob = runCatching { KeepAlive.launch(scope, this) }.getOrNull()
                 val gen = pipelineGen.incrementAndGet()
                 pipelineJob = scope.launch { runPipeline(gen) }
+            } else {
+                // Service already started (e.g. user tapped START again): if
+                // the pipeline died but the service object lives, the tap was
+                // a silent no-op. Re-launch unless a restart owns the handoff.
+                runCatching { ProxyState.setShouldRun(this, true) }
+                if (pipelineJob?.isActive != true && !restartGuard.get()) {
+                    Log.i(TAG, "START while pipeline dead - re-launching")
+                    runCatching { scheduleWatchdog(this) }
+                    if (keepAliveJob?.isActive != true) {
+                        keepAliveJob = runCatching { KeepAlive.launch(scope, this) }.getOrNull()
+                    }
+                    val gen = pipelineGen.incrementAndGet()
+                    pipelineJob = scope.launch { runPipeline(gen) }
+                }
             }
             return START_STICKY
         } catch (e: Exception) {

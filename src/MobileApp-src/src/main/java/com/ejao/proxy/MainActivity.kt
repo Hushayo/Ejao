@@ -50,7 +50,6 @@ class MainActivity : AppCompatActivity() {
         val PROXY_TYPE_LABELS = listOf(
             "Auto (SOCKS5 + HTTP)"
         )
-        val EXPERIMENTAL_TYPES = emptySet<Int>()
         // Band picker. Index order MUST match BAND_VALUES.
         val BAND_LABELS = listOf("2.4 GHz", "5 GHz (default)", "Auto")
         val BAND_VALUES = listOf("2.4", "5", "auto")
@@ -223,7 +222,22 @@ class MainActivity : AppCompatActivity() {
                 val ready = AppState.updateAvailable.value
                 val file = runCatching { UpdateChecker.downloadedApkFile(this) }.getOrNull()
                 if (ready != null && file != null && file.exists()) {
-                    launchInstaller(file)
+                    // Re-verify: the background download may be old or the
+                    // file may have changed since. Never install on mismatch.
+                    tvUpdateStatus.text = "Verifying update $ready..."
+                    lifecycleScope.launch {
+                        val ok = withContext(Dispatchers.IO) {
+                            runCatching { UpdateChecker.verifyApkHash(file, ready) }.getOrDefault(false)
+                        }
+                        if (ok) {
+                            launchInstaller(file)
+                        } else {
+                            runCatching { file.delete() }
+                            AppState.updateAvailable.value = null
+                            tvUpdateStatus.text = "Update file failed its hash check - deleted. Tap to download again."
+                            btnCheckUpdate.text = "Check for updates"
+                        }
+                    }
                 } else {
                     checkForUpdate()
                 }
@@ -350,43 +364,27 @@ class MainActivity : AppCompatActivity() {
         etKeepaliveInterval.addTextChangedListener(watcher)
     }
 
+    // Single real mode: Auto (SOCKS5 + HTTP together). The dropdown exists
+    // only to display it; proxyType is always 0. Old config.txt values
+    // (1/2/3) are still honored by the engine (see AppConfig.effectiveMode),
+    // out-of-range garbage is coerced to 0 at parse time.
     private fun setupProxyTypeDropdown(selected: Int) {
-        val adapter = object : ArrayAdapter<String>(
+        val adapter = ArrayAdapter(
             this,
             android.R.layout.simple_dropdown_item_1line,
             PROXY_TYPE_LABELS
-        ) {
-            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
-                val v = super.getView(position, convertView, parent)
-                runCatching {
-                    val tv = v.findViewById<TextView>(android.R.id.text1)
-                    tv?.setTextColor(
-                        if (position in EXPERIMENTAL_TYPES) 0xFFC62828.toInt()
-                        else ContextCompat.getColor(this@MainActivity, R.color.text_primary)
-                    )
-                }
-                return v
-            }
-        }
+        )
         etProxyType.setAdapter(adapter)
-        etProxyType.setText(PROXY_TYPE_LABELS.getOrElse(selected) { PROXY_TYPE_LABELS[0] }, false)
-        applyProxyTypeColor(selected)
+        etProxyType.setText(PROXY_TYPE_LABELS[0], false)
+        runCatching {
+            etProxyType.setTextColor(ContextCompat.getColor(this, R.color.text_primary))
+        }
         etProxyType.setOnItemClickListener { _, _, position, _ ->
             runCatching {
                 etProxyType.setText(PROXY_TYPE_LABELS[position], false)
-                applyProxyTypeColor(position)
-                updatePortVisibility(position)
+                updatePortVisibility(0)
                 autosave()
             }
-        }
-    }
-
-    private fun applyProxyTypeColor(position: Int) {
-        runCatching {
-            etProxyType.setTextColor(
-                if (position in EXPERIMENTAL_TYPES) 0xFFC62828.toInt()
-                else ContextCompat.getColor(this, R.color.text_primary)
-            )
         }
     }
 
@@ -440,17 +438,23 @@ class MainActivity : AppCompatActivity() {
     private fun chosenUpdateIntervalHours(): Int {
         return try {
             if (!swAutoUpdate.isChecked) return 0
-            UPDATE_INTERVAL_VALUES.getOrElse(UPDATE_INTERVAL_LABELS.indexOf(etUpdateCheckInterval.text.toString())) { 2 }
+            // Index into VALUES by label position; unknown text (or any slip)
+            // falls back to the default 6h entry (index 2) - never 0, so a
+            // parse hiccup can't silently disable background checks.
+            // (The old getOrElse default returned 2, a value that isn't even
+            // one of the 1/3/6/12/24 options.)
+            val idx = UPDATE_INTERVAL_LABELS.indexOf(etUpdateCheckInterval.text.toString())
+                .let { if (it < 0) 2 else it }
+            UPDATE_INTERVAL_VALUES.getOrElse(idx) { 6 }
         } catch (_: Exception) {
-            0
+            6
         }
     }
 
     /**
-     * Show only the relevant port field(s) for the chosen proxy type so the
-     * form doesn't waste vertical space. Auto (0) and SOCKS5 (1) -> SOCKS5 port;
-     * HTTP (2) -> HTTP port; Hybrid (3) -> both side-by-side in the row.
-     * A single visible port expands to full width.
+     * Port-field visibility. Always called with 0 (Auto = both ports) now that
+     * the mode picker is gone; the branches stay so a future mode needs no
+     * layout work.
      */
     private fun updatePortVisibility(proxyType: Int) {
         runCatching {
@@ -569,9 +573,9 @@ class MainActivity : AppCompatActivity() {
         val ssid = etSsid.text.toString().trim()
         val port = etPort.text.toString().toIntOrNull()
         val httpPort = etHttpPort.text.toString().toIntOrNull()
-        val proxyType = PROXY_TYPE_LABELS.indexOf(etProxyType.text.toString()).let {
-            if (it < 0) 0 else it
-        }
+        // Single real mode (always 0 = Auto). The dropdown can't produce
+        // anything else; the engine still honors hand-edited 1/2/3.
+        val proxyType = 0
         val band = BAND_VALUES.getOrElse(BAND_LABELS.indexOf(etBand.text.toString())) { "2.4" }
         val updateCheckIntervalHours = chosenUpdateIntervalHours()
         fun reject(msg: String): AppConfig? {
@@ -596,7 +600,6 @@ class MainActivity : AppCompatActivity() {
         val keepaliveUrl = etKeepaliveUrl.text.toString().trim()
         val intervalSec = etKeepaliveInterval.text.toString().toLongOrNull()
         if (intervalSec != null && intervalSec < 15) return reject("Keep-alive interval must be >= 15s - not saved yet")
-        if (proxyType !in 0..3) return reject("Proxy type must be 0, 1, 2, or 3 - not saved yet")
         return prev.copy(
             ssid = ssid.ifEmpty { ConfigManager.defaultConfig.ssid },
             password = pass,
@@ -651,9 +654,25 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // Ports the running proxy actually bound (snapshotted at start). The
+    // info box used to read the editable fields live, so merely typing a new
+    // port rewrote the displayed endpoint while the servers still ran on the
+    // old one.
+    private var snapshotSocksPort = ""
+    private var snapshotHttpPort = ""
+
     private fun renderRunning(running: Boolean) {
         runCatching {
             btnToggle.text = if (running) "STOP PROXY" else "START PROXY"
+            if (running) {
+                // Capture what the proxy is about to boot on (persistCopy in
+                // startSelectedProxy already validated + saved these).
+                snapshotSocksPort = etPort.text.toString().ifEmpty { "1080" }
+                snapshotHttpPort = etHttpPort.text.toString().ifEmpty { "8282" }
+            } else {
+                snapshotSocksPort = ""
+                snapshotHttpPort = ""
+            }
         }
     }
 
@@ -664,8 +683,14 @@ class MainActivity : AppCompatActivity() {
                 tvPanelUrl.text = ""
                 return
             }
-            val socksPort = runCatching { etPort.text.ifEmpty { "1080" }.toString() }.getOrDefault("1080")
-            val httpPort = runCatching { etHttpPort.text.ifEmpty { "8282" }.toString() }.getOrDefault("8282")
+            // Prefer the start-time snapshot; fall back to live fields (e.g.
+            // service auto-resumed after update without this Activity).
+            val socksPort = snapshotSocksPort.ifEmpty {
+                runCatching { etPort.text.ifEmpty { "1080" }.toString() }.getOrDefault("1080")
+            }
+            val httpPort = snapshotHttpPort.ifEmpty {
+                runCatching { etHttpPort.text.ifEmpty { "8282" }.toString() }.getOrDefault("8282")
+            }
             val infoLines = mutableListOf(
                 "SSID:      ${info.ssid}",
                 "Password:  ${info.passphrase}",
@@ -796,7 +821,7 @@ class MainActivity : AppCompatActivity() {
                             }.getOrNull()
                         }
                         if (file == null) {
-                            tvUpdateStatus.text = "Download failed. Check your connection and try again."
+                            tvUpdateStatus.text = "Download failed (or hash check failed). Check your connection and try again."
                         } else {
                             AppState.updateAvailable.value = latest
                             tvUpdateStatus.text = "Downloaded $latest - opening installer..."
