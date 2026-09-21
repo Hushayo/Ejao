@@ -560,66 +560,88 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun autosave() {
-        try {
-            val pass = etPass.text.toString()
-            val ssid = etSsid.text.toString().trim()
-            val port = etPort.text.toString().toIntOrNull()
-            val httpPort = etHttpPort.text.toString().toIntOrNull()
-            val proxyType = PROXY_TYPE_LABELS.indexOf(etProxyType.text.toString()).let {
-                if (it < 0) 0 else it
-            }
-            val band = BAND_VALUES.getOrElse(BAND_LABELS.indexOf(etBand.text.toString())) { "2.4" }
-            val updateCheckIntervalHours = chosenUpdateIntervalHours()
-        if (pass.length !in 8..63) {
-            tvSaved.setTextColor(0xFFC62828.toInt())
-            tvSaved.text = "Password must be 8-63 characters - not saved yet"
-            return
+    /**
+     * Reads widgets + validates. Returns the config to persist, or null after
+     * showing why in tvSaved. Main thread only (touches views).
+     */
+    private fun buildSaveCopy(): AppConfig? {
+        val pass = etPass.text.toString()
+        val ssid = etSsid.text.toString().trim()
+        val port = etPort.text.toString().toIntOrNull()
+        val httpPort = etHttpPort.text.toString().toIntOrNull()
+        val proxyType = PROXY_TYPE_LABELS.indexOf(etProxyType.text.toString()).let {
+            if (it < 0) 0 else it
         }
-        if (port == null || port < 1 || port > 65535) {
+        val band = BAND_VALUES.getOrElse(BAND_LABELS.indexOf(etBand.text.toString())) { "2.4" }
+        val updateCheckIntervalHours = chosenUpdateIntervalHours()
+        fun reject(msg: String): AppConfig? {
             tvSaved.setTextColor(0xFFC62828.toInt())
-            tvSaved.text = "Invalid port - not saved yet"
-            return
+            tvSaved.text = msg
+            return null
         }
-        if (httpPort == null || httpPort < 1 || httpPort > 65535) {
-            tvSaved.setTextColor(0xFFC62828.toInt())
-            tvSaved.text = "Invalid HTTP port - not saved yet"
-            return
-        }
+        if (pass.length !in 8..63) return reject("Password must be 8-63 characters - not saved yet")
+        if (port == null || port < 1 || port > 65535) return reject("Invalid port - not saved yet")
+        if (httpPort == null || httpPort < 1 || httpPort > 65535) return reject("Invalid HTTP port - not saved yet")
+        // The visible fields must not collide with each other or with the
+        // config-file-only ports (SOCKS4/panel/backup): a collision binds
+        // half the servers and used to report a lying RUNNING state.
+        val prev = ConfigManager.load(this)
+        if (port == httpPort) return reject("SOCKS5 and HTTP ports must differ - not saved yet")
+        val clash = mapOf(
+            "SOCKS4" to prev.socks4Port,
+            "panel" to prev.panelPort,
+            "backup panel" to prev.backupPanelPort
+        ).entries.firstOrNull { port == it.value || httpPort == it.value }
+        if (clash != null) return reject("Port clashes with ${clash.key} (${clash.value}) - not saved yet")
         val keepaliveUrl = etKeepaliveUrl.text.toString().trim()
         val intervalSec = etKeepaliveInterval.text.toString().toLongOrNull()
-        if (intervalSec != null && intervalSec < 15) {
-            tvSaved.setTextColor(0xFFC62828.toInt())
-            tvSaved.text = "Keep-alive interval must be >= 15s - not saved yet"
-            return
-        }
-        if (proxyType !in 0..3) {
-            tvSaved.setTextColor(0xFFC62828.toInt())
-            tvSaved.text = "Proxy type must be 0, 1, 2, or 3 - not saved yet"
-            return
-        }
-        val prev = ConfigManager.load(this)
-        ConfigManager.save(
-            this,
-            prev.copy(
-                ssid = ssid.ifEmpty { ConfigManager.defaultConfig.ssid },
-                password = pass,
-                port = port,
-                band = band,
-                proxyType = proxyType,
-                httpPort = httpPort,
-                keepaliveUrl = keepaliveUrl,
-                keepaliveIntervalMs = (intervalSec ?: (prev.keepaliveIntervalMs / 1000)) * 1000L,
-                requireApprovalRestart = chkRequireApprovalRestart.isChecked,
-                disableBandSelector = chkDisableBandSelector.isChecked,
-                keepRetryingReform = chkKeepRetryingReform.isChecked,
-                autoRestartOnWifiReturn = chkAutoRestartOnWifiReturn.isChecked,
-                updateCheckIntervalHours = updateCheckIntervalHours
-            )
+        if (intervalSec != null && intervalSec < 15) return reject("Keep-alive interval must be >= 15s - not saved yet")
+        if (proxyType !in 0..3) return reject("Proxy type must be 0, 1, 2, or 3 - not saved yet")
+        return prev.copy(
+            ssid = ssid.ifEmpty { ConfigManager.defaultConfig.ssid },
+            password = pass,
+            port = port,
+            band = band,
+            proxyType = proxyType,
+            httpPort = httpPort,
+            keepaliveUrl = keepaliveUrl,
+            keepaliveIntervalMs = (intervalSec ?: (prev.keepaliveIntervalMs / 1000)) * 1000L,
+            requireApprovalRestart = chkRequireApprovalRestart.isChecked,
+            disableBandSelector = chkDisableBandSelector.isChecked,
+            keepRetryingReform = chkKeepRetryingReform.isChecked,
+            autoRestartOnWifiReturn = chkAutoRestartOnWifiReturn.isChecked,
+            updateCheckIntervalHours = updateCheckIntervalHours
         )
+    }
+
+    /**
+     * File + MediaStore write off the main thread: ConfigManager.save() hits
+     * app storage AND the Documents provider, which can stall the UI (ANR
+     * risk) on slow storage when run inline. Main thread only (touches views).
+     */
+    private suspend fun persistCopy(copy: AppConfig): Boolean {
+        val err = withContext(Dispatchers.IO) {
+            runCatching { ConfigManager.save(this@MainActivity, copy) }
+                .exceptionOrNull()?.message
+        }
+        if (err != null) {
+            Log.e(TAG, "autosave failed: $err")
+            tvSaved.setTextColor(0xFFC62828.toInt())
+            tvSaved.text = "Save failed: $err"
+            return false
+        }
         tvSaved.setTextColor(0xFF2E7D32.toInt())
         val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
         tvSaved.text = "Saved to config.txt \u2713 $time"
+        return true
+    }
+
+    private fun autosave() {
+        try {
+            val copy = buildSaveCopy() ?: return
+            tvSaved.setTextColor(0xFFB8A99F.toInt())
+            tvSaved.text = "Saving..."
+            lifecycleScope.launch { persistCopy(copy) }
         } catch (e: Exception) {
             Log.e(TAG, "autosave failed", e)
             runCatching {
@@ -675,8 +697,25 @@ class MainActivity : AppCompatActivity() {
             }
             val idx = PROXY_TYPE_LABELS.indexOf(etProxyType.text.toString()).let { if (it < 0) 0 else it }
             runCatching { etProxyType.setText(PROXY_TYPE_LABELS[idx], false) }
-            runCatching { autosave() }
-            checkPermissionsAndStart()
+            // Persist first and only start on success: autosave is async now,
+            // so starting immediately would boot the proxy on stale config
+            // (e.g. edited port not yet written).
+            lifecycleScope.launch {
+                val copy = try {
+                    buildSaveCopy()
+                } catch (e: Exception) {
+                    Log.e(TAG, "start selected proxy failed", e)
+                    null
+                }
+                if (copy == null) {
+                    runCatching {
+                        Toast.makeText(this@MainActivity, "Fix the highlighted setting before starting", Toast.LENGTH_LONG).show()
+                    }
+                    return@launch
+                }
+                if (!persistCopy(copy)) return@launch
+                checkPermissionsAndStart()
+            }
         } catch (e: Exception) {
             Log.e(TAG, "start selected proxy failed", e)
             runCatching {

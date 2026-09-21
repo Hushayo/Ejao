@@ -611,9 +611,7 @@ class HttpProxyServer(
     ) {
         var upstream: Socket? = null
         val t0 = System.currentTimeMillis()
-        val hostPort = target.split(":")
-        val host = hostPort[0]
-        val port = hostPort.getOrNull(1)?.toIntOrNull() ?: 443
+        val (host, port) = parseConnectTarget(target)
         tunnelCount.incrementAndGet()
         AppState.tcpTunnels.value = tunnelCount.get()
         try {
@@ -665,6 +663,34 @@ class HttpProxyServer(
             runCatching { upstream?.close() }
             val left = tunnelCount.decrementAndGet()
             AppState.tcpTunnels.value = if (left < 0) 0 else left
+        }
+    }
+
+    /**
+     * Bracket-aware CONNECT authority parse. The old `split(":")` broke IPv6
+     * targets (`[2603:...]:443` parsed as host=`[2603`, port=1020) so every
+     * IPv6 CONNECT 502'd. Forms handled: `host:port`, `host`, `[v6]:port`,
+     * `[v6]`, and bare `v6` (all-colon literal, default port).
+     */
+    private fun parseConnectTarget(target: String): Pair<String, Int> {
+        val t = target.trim()
+        if (t.startsWith("[")) {
+            val close = t.indexOf(']')
+            if (close > 0) {
+                val host = t.substring(1, close)
+                val port = t.substring(close + 1).removePrefix(":").toIntOrNull() ?: 443
+                return host to port
+            }
+            return t to 443
+        }
+        // Bare IPv6 literal (more than one colon, no brackets): the whole
+        // thing is the host, port is default. Splitting would shred it.
+        if (t.count { it == ':' } > 1) return t to 443
+        val idx = t.lastIndexOf(':')
+        return if (idx > 0) {
+            t.substring(0, idx) to (t.substring(idx + 1).toIntOrNull() ?: 443)
+        } else {
+            t to 443
         }
     }
 

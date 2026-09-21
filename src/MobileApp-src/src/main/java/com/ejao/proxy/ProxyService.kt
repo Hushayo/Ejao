@@ -139,6 +139,26 @@ class ProxyService : Service() {
             val config = ConfigManager.ensureConfig(this)
             if (!started.get()) return
 
+            // Fail fast on port collisions (e.g. hand-edited config.txt set
+            // two services on one port): binding would half-fail and lie
+            // about RUNNING. Park with a clear message instead of dying.
+            val ports = listOf(
+                config.port, config.httpPort, config.socks4Port,
+                config.panelPort, config.backupPanelPort
+            )
+            if (ports.size != ports.toSet().size) {
+                Log.e(TAG, "proxy_error: port collision in config: $ports")
+                updateStatus(
+                    "ERROR: ports must all differ " +
+                        "(socks=${config.port} http=${config.httpPort} " +
+                        "socks4=${config.socks4Port} panel=${config.panelPort} " +
+                        "backup=${config.backupPanelPort}) - fix config.txt, then Restart"
+                )
+                runCatching { scheduleWatchdog(this) }
+                while (started.get() && pipelineGen.get() == myGen) delay(5000)
+                return
+            }
+
             AppState.running.value = true
             TrafficStats.reset()
             AppState.netMaxBps = 0L
@@ -587,9 +607,16 @@ class ProxyService : Service() {
             }
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) return
-            Log.e(TAG, "pipeline error", e)
-            updateStatus("ERROR: ${e.message}")
-            stopSelf()
+            // Never stopSelf() here: this catches transient slips in the
+            // monitoring loop (bad ARP line, stale client snapshot). Killing
+            // the service over those cancelled the watchdog + shouldRun and
+            // stranded the user. Stay alive on the backup panel instead; a
+            // panel restart (new pipelineGen) supersedes this generation.
+            Log.e(TAG, "pipeline error (staying alive)", e)
+            updateStatus("ERROR: ${e.message} - backup panel still up, tap Restart to recover")
+            runCatching { scheduleWatchdog(this) }
+            while (started.get() && pipelineGen.get() == myGen) delay(5000)
+            return
         }
     }
 
