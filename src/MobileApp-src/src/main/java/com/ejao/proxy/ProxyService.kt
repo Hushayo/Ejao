@@ -319,80 +319,15 @@ class ProxyService : Service() {
             startBackupPanel(goIp, config)
             proxyDownNotified = false
 
-            val hybrid = config.isHybrid()
-            val httpMode = config.effectiveMode() == "http"
-            AppState.httpMode.value = httpMode || hybrid
-
-            when {
-                httpMode -> {
-                    updateStatus("Starting HTTP proxy on $goIp:${config.httpPort}...")
-                    val server = HttpProxyServer(
-                        port = config.httpPort,
-                        context = this,
-                        goIp = goIp,
-                        panelPort = config.panelPort,
-                        onLog = { updateStatus("  $it") },
-                        onStaleDetected = { restartProxy() }
-                    )
-                    http = server
-                    server.start()
-                    Log.i(TAG, "HTTP proxy started on $goIp:${config.httpPort}")
-                    startSocks4(goIp, config)
-                    AppState.apInfo.value = ApInfo(actualSsid, actualPass, goIp, 0, config.panelPort, backupPanelPortActual)
-                    updateStatus("RUNNING (HTTP) - connect to '$actualSsid' then HTTP proxy $goIp:${config.httpPort} and SOCKS4 $goIp:${config.socks4Port}")
-                    updateNotification(actualSsid, actualPass, goIp, config.httpPort, 0, false, config.panelPort, backupPanelPortActual)
-                    Log.i(TAG, "proxy_started mode=http port=${config.httpPort}")
-                }
-                hybrid -> {
-                    updateStatus("Starting SOCKS5 proxy on $goIp:${config.port}...")
-                    socks = Socks5Server(
-                        port = config.port,
-                        advertiseIp = goIp,
-                        context = this,
-                        onLog = { updateStatus("  $it") }
-                    ).also { it.start() }
-                    Log.i(TAG, "SOCKS5 started on $goIp:${config.port}")
-                    updateStatus("Starting HTTP proxy on $goIp:${config.httpPort}...")
-                    val server = HttpProxyServer(
-                        port = config.httpPort,
-                        context = this,
-                        goIp = goIp,
-                        panelPort = config.panelPort,
-                        onLog = { updateStatus("  $it") },
-                        onStaleDetected = { restartProxy() }
-                    )
-                    http = server
-                    server.start()
-                    Log.i(TAG, "HTTP proxy started on $goIp:${config.httpPort}")
-                    startSocks4(goIp, config)
-                    AppState.apInfo.value = ApInfo(actualSsid, actualPass, goIp, 0, config.panelPort, backupPanelPortActual)
-                    updateStatus("RUNNING (HYBRID) - connect to '$actualSsid' then SOCKS5 $goIp:${config.port} and HTTP $goIp:${config.httpPort} and SOCKS4 $goIp:${config.socks4Port}")
-                    updateNotification(actualSsid, actualPass, goIp, config.port, config.httpPort, true, config.panelPort, backupPanelPortActual)
-                    Log.i(TAG, "proxy_started mode=hybrid port=${config.port} http_port=${config.httpPort}")
-                }
-                else -> {
-                    updateStatus("Starting SOCKS5 proxy on $goIp:${config.port}...")
-                    socks = Socks5Server(
-                        port = config.port,
-                        advertiseIp = goIp,
-                        context = this,
-                        onLog = { updateStatus("  $it") }
-                    ).also { it.start() }
-                    Log.i(TAG, "SOCKS5 started on $goIp:${config.port}")
-                    startSocks4(goIp, config)
-                    AppState.apInfo.value = ApInfo(actualSsid, actualPass, goIp, 0, config.panelPort, backupPanelPortActual)
-                    updateStatus("RUNNING - connect to '$actualSsid' then SOCKS5 $goIp:${config.port} and SOCKS4 $goIp:${config.socks4Port}")
-                    updateNotification(actualSsid, actualPass, goIp, config.port, 0, false, config.panelPort, backupPanelPortActual)
-                    Log.i(TAG, "proxy_started mode=socks5 port=${config.port}")
-                }
-            }
+            startDataPlane(config, goIp, actualSsid, actualPass)
             if (config.panelEnabled) {
                 val ps = PanelServer(
                     port = config.panelPort,
                     context = this,
                     enabled = true,
                     onLog = { updateStatus("  $it") },
-                    onRestartRequest = { handlePanelRestart() }
+                    onRestartRequest = { handlePanelRestart() },
+                    onIdleRequest = { idle -> setIdle(idle) }
                 )
                 panel = ps
                 ps.start()
@@ -465,7 +400,9 @@ class ProxyService : Service() {
                     val fresh = runCatching { ConfigManager.load(this) }.getOrDefault(config)
                     startBackupPanel(lastGoIp, fresh)
                 }
-                if (isMainProxyDown(config)) {
+                // Idle pauses the data plane on purpose: closed proxy ports
+                // are expected, so skip the PROXY DOWN detector entirely.
+                if (!AppState.isIdle.value && isMainProxyDown(config)) {
                     downStreak++
                     if (downStreak >= 2) {
                         val bPort = backupPanelPortActual
@@ -613,7 +550,11 @@ class ProxyService : Service() {
                             lastClientCount = c
                         } else {
                             val c = AppState.apInfo.value.clients
-                            if (c != lastClientCount || proxyDownNotified) {
+                            // Don't overwrite the IDLE banner when the head
+                            // count shifts while paused; just track it.
+                            if (AppState.isIdle.value) {
+                                lastClientCount = c
+                            } else if (c != lastClientCount || proxyDownNotified) {
                                 lastClientCount = c
                                 AppState.status.value = "RUNNING - clients connected: $c"
                             }
@@ -667,6 +608,151 @@ class ProxyService : Service() {
         socks4 = server
         server.start()
         Log.i(TAG, "SOCKS4 started on $goIp:${config.socks4Port}")
+    }
+
+    /**
+     * Data plane only: SOCKS5 + HTTP + SOCKS4. Extracted from runPipeline so
+     * Idle resume can bring exactly this back without touching the hotspot,
+     * panels, locks, or service lifetime.
+     */
+    private fun startDataPlane(config: AppConfig, goIp: String, actualSsid: String, actualPass: String) {
+        val hybrid = config.isHybrid()
+        val httpMode = config.effectiveMode() == "http"
+        AppState.httpMode.value = httpMode || hybrid
+
+        when {
+            httpMode -> {
+                updateStatus("Starting HTTP proxy on $goIp:${config.httpPort}...")
+                val server = HttpProxyServer(
+                    port = config.httpPort,
+                    context = this,
+                    goIp = goIp,
+                    panelPort = config.panelPort,
+                    onLog = { updateStatus("  $it") },
+                    onStaleDetected = { restartProxy() }
+                )
+                http = server
+                server.start()
+                Log.i(TAG, "HTTP proxy started on $goIp:${config.httpPort}")
+                startSocks4(goIp, config)
+                AppState.apInfo.value = ApInfo(actualSsid, actualPass, goIp, 0, config.panelPort, backupPanelPortActual)
+                updateStatus("RUNNING (HTTP) - connect to '$actualSsid' then HTTP proxy $goIp:${config.httpPort} and SOCKS4 $goIp:${config.socks4Port}")
+                updateNotification(actualSsid, actualPass, goIp, config.httpPort, 0, false, config.panelPort, backupPanelPortActual)
+                Log.i(TAG, "proxy_started mode=http port=${config.httpPort}")
+            }
+            hybrid -> {
+                updateStatus("Starting SOCKS5 proxy on $goIp:${config.port}...")
+                socks = Socks5Server(
+                    port = config.port,
+                    advertiseIp = goIp,
+                    context = this,
+                    onLog = { updateStatus("  $it") }
+                ).also { it.start() }
+                Log.i(TAG, "SOCKS5 started on $goIp:${config.port}")
+                updateStatus("Starting HTTP proxy on $goIp:${config.httpPort}...")
+                val server = HttpProxyServer(
+                    port = config.httpPort,
+                    context = this,
+                    goIp = goIp,
+                    panelPort = config.panelPort,
+                    onLog = { updateStatus("  $it") },
+                    onStaleDetected = { restartProxy() }
+                )
+                http = server
+                server.start()
+                Log.i(TAG, "HTTP proxy started on $goIp:${config.httpPort}")
+                startSocks4(goIp, config)
+                AppState.apInfo.value = ApInfo(actualSsid, actualPass, goIp, 0, config.panelPort, backupPanelPortActual)
+                updateStatus("RUNNING (HYBRID) - connect to '$actualSsid' then SOCKS5 $goIp:${config.port} and HTTP $goIp:${config.httpPort} and SOCKS4 $goIp:${config.socks4Port}")
+                updateNotification(actualSsid, actualPass, goIp, config.port, config.httpPort, true, config.panelPort, backupPanelPortActual)
+                Log.i(TAG, "proxy_started mode=hybrid port=${config.port} http_port=${config.httpPort}")
+            }
+            else -> {
+                updateStatus("Starting SOCKS5 proxy on $goIp:${config.port}...")
+                socks = Socks5Server(
+                    port = config.port,
+                    advertiseIp = goIp,
+                    context = this,
+                    onLog = { updateStatus("  $it") }
+                ).also { it.start() }
+                Log.i(TAG, "SOCKS5 started on $goIp:${config.port}")
+                startSocks4(goIp, config)
+                AppState.apInfo.value = ApInfo(actualSsid, actualPass, goIp, 0, config.panelPort, backupPanelPortActual)
+                updateStatus("RUNNING - connect to '$actualSsid' then SOCKS5 $goIp:${config.port} and SOCKS4 $goIp:${config.socks4Port}")
+                updateNotification(actualSsid, actualPass, goIp, config.port, 0, false, config.panelPort, backupPanelPortActual)
+                Log.i(TAG, "proxy_started mode=socks5 port=${config.port}")
+            }
+        }
+    }
+
+    private fun stopDataPlane() {
+        runCatching { socks?.stop() }
+        runCatching { socks4?.stop() }
+        runCatching { http?.stop() }
+        socks = null
+        socks4 = null
+        http = null
+    }
+
+    /**
+     * Idle toggle from the panel. Runs on panel worker threads (not a
+     * coroutine), so only thread-safe calls: server start/stop are plain
+     * functions, state is Atomic/StateFlow.
+     *
+     * Idle(true): hotspot, panels, locks, watchdog, keepalive all stay up -
+     * only forwarding stops, so clients get fast refused/closed instead of
+     * internet. Idle(false): data plane back, no P2P dance, instant.
+     */
+    fun setIdle(idle: Boolean) {
+        if (!started.get()) return
+        if (idle == AppState.isIdle.value) return
+        if (restartGuard.get()) {
+            updateStatus("Restart in progress - try Idle again in a few seconds")
+            return
+        }
+        if (idle) {
+            if (AppState.apInfo.value.goIp.isEmpty()) {
+                updateStatus("Not running yet - nothing to idle")
+                return
+            }
+            stopDataPlane()
+            AppState.isIdle.value = true
+            proxyDownNotified = false
+            updateStatus("IDLE - internet paused, hotspot still up. Tap Resume in the panel.")
+            refreshNotification()
+            Log.i(TAG, "idle on - data plane paused, service alive")
+        } else {
+            val goIp = AppState.apInfo.value.goIp
+            if (goIp.isEmpty()) {
+                AppState.isIdle.value = false
+                updateStatus("Nothing to resume - start the proxy first")
+                return
+            }
+            val cfg = ConfigManager.load(this)
+            val info = AppState.apInfo.value
+            startDataPlane(cfg, goIp, info.ssid, info.passphrase)
+            AppState.isIdle.value = false
+            proxyDownNotified = false
+            Log.i(TAG, "idle off - data plane resumed")
+        }
+    }
+
+    private fun refreshNotification() {
+        runCatching {
+            val info = AppState.apInfo.value
+            val cfg = ConfigManager.load(this)
+            val hybrid = cfg.isHybrid()
+            val httpMode = cfg.effectiveMode() == "http"
+            updateNotification(
+                info.ssid, info.passphrase, info.goIp,
+                if (httpMode && !hybrid) cfg.httpPort else cfg.port,
+                if (hybrid) cfg.httpPort else 0,
+                hybrid,
+                cfg.panelPort,
+                backupPanelPortActual,
+                idle = AppState.isIdle.value
+            )
+        }
     }
 
     private fun handlePanelRestart() {
@@ -890,6 +976,8 @@ class ProxyService : Service() {
                 http = null
                 panel = null
                 proxyDownNotified = false
+                // A restart means fresh forwarding: never come back stuck idle.
+                AppState.isIdle.value = false
                 AppState.isReforming.value = false
                 runCatching {
                     val p2p = WifiDirectManager(this@ProxyService)
@@ -937,6 +1025,7 @@ class ProxyService : Service() {
         backupPanel = null
         backupPanelPortActual = 0
         proxyDownNotified = false
+        AppState.isIdle.value = false
         AppState.isReforming.value = false
         runCatching { WifiDirectManager(this).removeGroup() }
         runCatching { EgressManager.shutdown() }
@@ -1022,7 +1111,7 @@ class ProxyService : Service() {
             .build()
     }
 
-    private fun updateNotification(ssid: String, pass: String, ip: String, socksPort: Int, httpPort: Int, hybrid: Boolean, panelPort: Int = 0, backupPort: Int = 0) {
+    private fun updateNotification(ssid: String, pass: String, ip: String, socksPort: Int, httpPort: Int, hybrid: Boolean, panelPort: Int = 0, backupPort: Int = 0, idle: Boolean = false) {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val panelLine = if (panelPort > 0) "\nPanel: $ip:$panelPort" else ""
         val backupLine = if (backupPort > 0) "\nBackup: $ip:$backupPort" else ""
@@ -1033,11 +1122,13 @@ class ProxyService : Service() {
         }
         val summary = if (hybrid) "$ssid | SOCKS5 $ip:$socksPort | HTTP $ip:$httpPort | pass: $pass"
         else "$ssid | $ip:$socksPort | pass: $pass"
+        val title = if (idle) "Ejao UDP Proxy - IDLE" else "Ejao UDP Proxy - RUNNING"
+        val fullDetail = (if (idle) "IDLE - internet paused, hotspot still up.\n" else "") + detail
         val notif = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_s)
-            .setContentTitle("Ejao UDP Proxy - RUNNING")
+            .setContentTitle(title)
             .setContentText(summary)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(detail))
+            .setStyle(NotificationCompat.BigTextStyle().bigText(fullDetail))
             .setContentIntent(PendingIntent.getActivity(
                 this, 0,
                 Intent(this, MainActivity::class.java),

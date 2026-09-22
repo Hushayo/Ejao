@@ -19,6 +19,9 @@ object AppState {
     val tcpTunnels = MutableStateFlow(0)
     val isReforming = MutableStateFlow(false)
     val updateAvailable = MutableStateFlow<String?>(null)
+    // Idle mode: hotspot + service stay up, data plane (SOCKS/HTTP) paused.
+    // Panel + backup panel stay reachable so Resume is one tap away.
+    val isIdle = MutableStateFlow(false)
     var serviceStartedAt: Long = 0L
     @Volatile var netDownBps: Long = 0L
     @Volatile var netUpBps: Long = 0L

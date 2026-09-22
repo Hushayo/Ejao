@@ -41,7 +41,8 @@ class PanelServer(
     private val context: Context,
     private val enabled: Boolean = true,
     private val onLog: (String) -> Unit = {},
-    private val onRestartRequest: () -> Unit = {}
+    private val onRestartRequest: () -> Unit = {},
+    private val onIdleRequest: (Boolean) -> Unit = {}
 ) {
     // Small dedicated pool. The panel is low-traffic (a few requests); it must
     // never compete with the proxy's worker pool, which is exactly why it
@@ -131,6 +132,18 @@ class PanelServer(
                     // first the browser would hang on "loading" forever with no reply.
                     writePanelPage(output, restartRequestedHtml())
                     onRestartRequest()
+                    return
+                }
+                if (target == "/idle") {
+                    // Data plane pause only: group, panels, service all stay
+                    // up, so this reply + a later /resume always get through.
+                    writePanelPage(output, idleHtml(true))
+                    onIdleRequest(true)
+                    return
+                }
+                if (target == "/resume") {
+                    writePanelPage(output, idleHtml(false))
+                    onIdleRequest(false)
                     return
                 }
                 if (target.substringBefore("?") == "/rename") {
@@ -317,6 +330,7 @@ class PanelServer(
             append("],")
             append("\"requireApprovalRestart\":").append(cfg.requireApprovalRestart).append(',')
             append("\"isReforming\":").append(AppState.isReforming.value).append(',')
+            append("\"idle\":").append(AppState.isIdle.value).append(',')
             append("\"version\":\"").append(BuildConfig.VERSION_NAME).append("\",")
             append("\"startedAt\":").append(AppState.serviceStartedAt).append(',')
             append("\"serverNow\":").append(System.currentTimeMillis())
@@ -354,8 +368,28 @@ class PanelServer(
         """.trimIndent()
     }
 
-    private fun writePanelPage(output: BufferedOutputStream, html: String) {
-        val bytes = html.toByteArray(Charsets.UTF_8)
+    private fun idleHtml(paused: Boolean): String {
+        val title = if (paused) "Idle on - internet paused" else "Resumed"
+        val msg = if (paused)
+            "Forwarding stopped. The hotspot, panels and service stay up, so clients stay on WiFi with no internet. Tap Resume below (or here) when you want it back."
+        else
+            "Forwarding is back - no hotspot dance needed, clients come back online as they retry."
+        return """
+        <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+        <title>Ejao Panel</title>
+        ${panelStyle()}
+        </head><body><div class="wrap">
+        <section class="card" style="text-align:center;padding:32px 16px">
+            <div class="card-head" style="margin-bottom:8px">Idle</div>
+            <h1 style="font-size:18px;margin:0 0 10px">$title</h1>
+            <p class="note" style="font-size:13px;color:var(--text-dim)">$msg</p>
+            <a href="/" class="btn" style="display:block;text-decoration:none;text-align:center;box-sizing:border-box">Back to panel</a>
+        </section>
+        </div></body></html>
+        """.trimIndent()
+    }
+
+    private fun writePanelPage(output: BufferedOutputStream, html: String) {        val bytes = html.toByteArray(Charsets.UTF_8)
         val header = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n" +
             "Content-Length: ${bytes.size}\r\nConnection: close\r\n\r\n"
         output.write(header.toByteArray(Charsets.UTF_8))
@@ -532,6 +566,17 @@ class PanelServer(
         <section class="card">
             <div class="card-head"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 17l6-6-6-6"/><path d="M12 19h8"/></svg>Activity <span class="right"><span class="live-text" id="v-live">connecting</span></span></div>
             <div class="log log-big" id="v-log"><div class="log-line" id="v-log-current">${escapeHtml(AppState.status.value)}</div></div>
+        </section>
+
+        <section class="card slim">
+            <div class="danger-row">
+                <div><div class="card-head" style="margin:0">Idle</div>
+                <div class="note" style="margin:4px 0 0">Pause internet but keep hotspot + service alive (nothing gets killed). Resume is instant, no hotspot dance. Restart always comes back running, never idle.</div></div>
+                <span style="display:flex;gap:8px;flex-shrink:0">
+                    <form method="post" action="/idle" style="margin:0"><button type="submit" class="btn btn-inline">Pause</button></form>
+                    <form method="post" action="/resume" style="margin:0"><button type="submit" class="btn btn-inline">Resume</button></form>
+                </span>
+            </div>
         </section>
 
         <form method="post" action="/restart">
