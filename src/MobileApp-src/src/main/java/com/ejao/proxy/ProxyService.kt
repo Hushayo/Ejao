@@ -135,6 +135,8 @@ class ProxyService : Service() {
                     if (keepAliveJob?.isActive != true) {
                         keepAliveJob = runCatching { KeepAlive.launch(scope, this) }.getOrNull()
                     }
+                    startedAt = System.currentTimeMillis()
+                    AppState.serviceStartedAt = startedAt
                     val gen = pipelineGen.incrementAndGet()
                     pipelineJob = scope.launch { runPipeline(gen) }
                 }
@@ -897,6 +899,10 @@ class ProxyService : Service() {
                 // session (1.5s was too short -> BUSY / bind conflicts).
                 delay(3000)
                 if (pipelineGen.get() != myGen || !started.get()) return@launch
+                // New pipeline = new uptime: the clock previously ran from
+                // first service start, so panel uptime never reset on restart.
+                startedAt = System.currentTimeMillis()
+                AppState.serviceStartedAt = startedAt
                 pipelineJob = scope.launch { runPipeline(myGen) }
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
