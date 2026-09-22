@@ -337,13 +337,15 @@ class ProxyService : Service() {
             if (backupPanelPortActual > 0) {
                 updateStatus("Backup panel (survives proxy crash): http://$goIp:$backupPanelPortActual/")
                 AppState.apInfo.value = AppState.apInfo.value.copy(backupPanelPort = backupPanelPortActual)
+                val hybridNotif = config.isHybrid()
+                val httpModeNotif = config.effectiveMode() == "http"
                 updateNotification(
                     AppState.apInfo.value.ssid.ifEmpty { actualSsid },
                     AppState.apInfo.value.passphrase.ifEmpty { actualPass },
                     goIp,
-                    if (httpMode && !hybrid) config.httpPort else config.port,
-                    if (hybrid) config.httpPort else 0,
-                    hybrid,
+                    if (httpModeNotif && !hybridNotif) config.httpPort else config.port,
+                    if (hybridNotif) config.httpPort else 0,
+                    hybridNotif,
                     config.panelPort,
                     backupPanelPortActual
                 )
