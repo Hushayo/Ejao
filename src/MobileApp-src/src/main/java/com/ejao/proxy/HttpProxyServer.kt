@@ -77,6 +77,23 @@ class HttpProxyServer(
     private val tunnelIdleTimeoutMs = 100_000
     private val tunnelCount = AtomicInteger(0)
 
+    // Panel-only mode for proxy Idle: serve self-host (panel) requests,
+    // 503 everything else. Lets browsers that reach the panel THROUGH the
+    // proxy keep loading it while internet is paused.
+    private val idleMode = AtomicBoolean(false)
+
+    fun setIdleMode(v: Boolean) {
+        idleMode.set(v)
+        if (v) {
+            // Freeze the stale-egress watchdog: local panel hits don't report,
+            // so without a reset the pre-idle counters would age into a
+            // phantom "no success" trip and auto-restart out of idle.
+            val now = System.currentTimeMillis()
+            lastSuccessMs.set(now)
+            lastFailureMs.set(now)
+        }
+    }
+
     private fun bindToCellular() {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val request = NetworkRequest.Builder()
@@ -199,6 +216,14 @@ class HttpProxyServer(
                 val method = parts[0].uppercase(Locale.US)
                 val target = parts[1]
                 val headers = readHeaders(reader) ?: break
+
+                // Idle (panel-only) mode: the only thing served is the panel
+                // itself; everything else gets a 503 with a resume pointer.
+                // CONNECT never addresses the panel, so it always 503s here.
+                if (idleMode.get() && !isSelfHostRequest(method, target, headers)) {
+                    writeIdleResponse(output)
+                    break
+                }
 
                 if (method == "CONNECT") {
                     handleConnect(client, reader, output, target, clientIp)
@@ -763,6 +788,24 @@ class HttpProxyServer(
     private fun writeSimpleResponse(output: OutputStream, code: Int, text: String) {
         runCatching {
             output.write("HTTP/1.1 $code $text\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".toByteArray())
+            output.flush()
+        }
+    }
+
+    private fun writeIdleResponse(output: OutputStream) {
+        runCatching {
+            val body =
+                "<html><body style=\"font-family:sans-serif\">" +
+                    "<h1>Ejao is idle</h1>" +
+                    "<p>Internet is paused. " +
+                    "<a href=\"http://$goIp:$panelPort/\">Open the panel to resume</a>.</p>" +
+                    "</body></html>"
+            val bytes = body.toByteArray(Charsets.UTF_8)
+            output.write(
+                ("HTTP/1.1 503 Paused\r\nContent-Type: text/html; charset=utf-8\r\n" +
+                    "Content-Length: ${bytes.size}\r\nConnection: close\r\n\r\n").toByteArray()
+            )
+            output.write(bytes)
             output.flush()
         }
     }

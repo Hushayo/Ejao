@@ -371,7 +371,7 @@ class PanelServer(
     private fun idleHtml(paused: Boolean): String {
         val title = if (paused) "Idle on - internet paused" else "Resumed"
         val msg = if (paused)
-            "Forwarding stopped. The hotspot, panels and service stay up, so clients stay on WiFi with no internet. Tap Resume below (or here) when you want it back."
+            "Forwarding stopped (SOCKS closed; HTTP answers panel only). The hotspot, panels and service stay up, so this page keeps loading even through the proxy. Tap Resume below (or here) when you want it back."
         else
             "Forwarding is back - no hotspot dance needed, clients come back online as they retry."
         return """
