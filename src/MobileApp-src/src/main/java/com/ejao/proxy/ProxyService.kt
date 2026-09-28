@@ -68,10 +68,10 @@ class ProxyService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val started = AtomicBoolean(false)
-    private var socks: Socks5Server? = null
-    private var socks4: Socks4Server? = null
-    private var http: HttpProxyServer? = null
-    private var panel: PanelServer? = null
+    @Volatile private var socks: Socks5Server? = null
+    @Volatile private var socks4: Socks4Server? = null
+    @Volatile private var http: HttpProxyServer? = null
+    @Volatile private var panel: PanelServer? = null
     private var backupPanel: BackupPanelServer? = null
     private var backupPanelPortActual: Int = 0
     private var proxyDownNotified = false
@@ -87,6 +87,14 @@ class ProxyService : Service() {
     // never run overlapping restarts (overlapping removeGroup/createGroup =
     // BUSY failures that used to kill the service after long uptime).
     private val restartGuard = AtomicBoolean(false)
+    // Guards the data-plane server pointers (socks/socks4/http/panel).
+    // setIdle() runs on PanelServer worker threads while startDataPlane()
+    // and restartProxy() run on the IO scope: without this, concurrent
+    // Resume + Restart could both see null and double-bind one port (second
+    // start throws) or null a reference whose stop() the other side skipped
+    // (leaked bound server). Kotlin synchronized() is reentrant so nested
+    // startDataPlane() -> startSocks4() on the same thread is safe.
+    private val dataPlaneLock = Any()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -603,16 +611,18 @@ class ProxyService : Service() {
     private fun startSocks4(goIp: String, config: AppConfig) {
         // Belt-and-braces against double-start (e.g. racing Resume taps):
         // binding an occupied port would kill the fresh server.
-        if (socks4 != null) return
-        updateStatus("Starting SOCKS4 proxy on $goIp:${config.socks4Port}...")
-        val server = Socks4Server(
-            port = config.socks4Port,
-            context = this,
-            onLog = { updateStatus("  $it") }
-        )
-        socks4 = server
-        server.start()
-        Log.i(TAG, "SOCKS4 started on $goIp:${config.socks4Port}")
+        synchronized(dataPlaneLock) {
+            if (socks4 != null) return
+            updateStatus("Starting SOCKS4 proxy on $goIp:${config.socks4Port}...")
+            val server = Socks4Server(
+                port = config.socks4Port,
+                context = this,
+                onLog = { updateStatus("  $it") }
+            )
+            socks4 = server
+            server.start()
+            Log.i(TAG, "SOCKS4 started on $goIp:${config.socks4Port}")
+        }
     }
 
     /**
@@ -625,6 +635,7 @@ class ProxyService : Service() {
         val httpMode = config.effectiveMode() == "http"
         AppState.httpMode.value = httpMode || hybrid
 
+        synchronized(dataPlaneLock) {
         when {
             httpMode -> {
                 // Reuse the kept-alive HTTP server on idle resume (it was
@@ -698,12 +709,13 @@ class ProxyService : Service() {
                 Log.i(TAG, "proxy_started mode=socks5 port=${config.port}")
             }
         }
+        }
     }
 
     /**
      * Idle toggle from the panel. Runs on panel worker threads (not a
-     * coroutine), so only thread-safe calls: server start/stop are plain
-     * functions, state is Atomic/StateFlow.
+     * coroutine), so data-plane pointer changes are guarded by
+     * dataPlaneLock (same lock as startDataPlane/restartProxy/onDestroy).
      *
      * Idle(true): hotspot, panels, locks, watchdog, keepalive all stay up.
      * SOCKS is stopped, but the HTTP server is KEPT running in panel-only
@@ -726,11 +738,14 @@ class ProxyService : Service() {
             }
             // Stop SOCKS entirely; HTTP stays up but panel-only so the
             // panel (including panel-via-proxy) keeps loading for Resume.
-            runCatching { socks?.stop() }
-            runCatching { socks4?.stop() }
-            socks = null
-            socks4 = null
-            http?.setIdleMode(true)
+            // Locked: Resume/Restart race this path on other threads.
+            synchronized(dataPlaneLock) {
+                runCatching { socks?.stop() }
+                runCatching { socks4?.stop() }
+                socks = null
+                socks4 = null
+                http?.setIdleMode(true)
+            }
             AppState.isIdle.value = true
             proxyDownNotified = false
             updateStatus("IDLE - internet paused, hotspot still up. Tap Resume in the panel.")
@@ -747,8 +762,11 @@ class ProxyService : Service() {
             val info = AppState.apInfo.value
             // HTTP was kept alive (just flagged): unflag it; startDataPlane
             // fills back whatever is missing and reuses what survived.
-            http?.setIdleMode(false)
-            startDataPlane(cfg, goIp, info.ssid, info.passphrase)
+            // Locked: a concurrent Restart must not null the pointers mid-resume.
+            synchronized(dataPlaneLock) {
+                http?.setIdleMode(false)
+                startDataPlane(cfg, goIp, info.ssid, info.passphrase)
+            }
             AppState.isIdle.value = false
             proxyDownNotified = false
             Log.i(TAG, "idle off - data plane resumed")
@@ -982,17 +1000,19 @@ class ProxyService : Service() {
                     pipelineJob?.join()
                 }
                 if (pipelineGen.get() != myGen || !started.get()) return@launch
-                runCatching { socks?.stop() }
-                runCatching { socks4?.stop() }
-                runCatching { http?.stop() }
-                runCatching { panel?.stop() }
-                // NOTE: backupPanel is deliberately NOT stopped - it stays
-                // reachable at :8284 throughout the restart so a failed
-                // restart never strands the user with no way back.
-                socks = null
-                socks4 = null
-                http = null
-                panel = null
+                synchronized(dataPlaneLock) {
+                    runCatching { socks?.stop() }
+                    runCatching { socks4?.stop() }
+                    runCatching { http?.stop() }
+                    runCatching { panel?.stop() }
+                    // NOTE: backupPanel is deliberately NOT stopped - it stays
+                    // reachable at :8284 throughout the restart so a failed
+                    // restart never strands the user with no way back.
+                    socks = null
+                    socks4 = null
+                    http = null
+                    panel = null
+                }
                 proxyDownNotified = false
                 // A restart means fresh forwarding: never come back stuck idle.
                 AppState.isIdle.value = false
@@ -1031,16 +1051,18 @@ class ProxyService : Service() {
         pipelineJob?.cancel()
         keepAliveJob?.cancel()
         runCatching { fileObserver?.stopWatching() }
-        runCatching { socks?.stop() }
-        runCatching { socks4?.stop() }
-        runCatching { http?.stop() }
-        runCatching { panel?.stop() }
-        runCatching { backupPanel?.stop() }
-        socks = null
-        socks4 = null
-        http = null
-        panel = null
-        backupPanel = null
+        synchronized(dataPlaneLock) {
+            runCatching { socks?.stop() }
+            runCatching { socks4?.stop() }
+            runCatching { http?.stop() }
+            runCatching { panel?.stop() }
+            runCatching { backupPanel?.stop() }
+            socks = null
+            socks4 = null
+            http = null
+            panel = null
+            backupPanel = null
+        }
         backupPanelPortActual = 0
         proxyDownNotified = false
         AppState.isIdle.value = false

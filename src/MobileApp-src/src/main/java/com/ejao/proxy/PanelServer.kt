@@ -191,18 +191,45 @@ class PanelServer(
             "Cache-Control: no-cache\r\nConnection: keep-alive\r\nX-Accel-Buffering: no\r\n\r\n"
         output.write(header.toByteArray(Charsets.UTF_8))
         output.flush()
+        runCatching {
+            synchronized(output) {
+                output.write(": connected\n\n".toByteArray(Charsets.UTF_8))
+                output.flush()
+            }
+        }
         // Park cap: close the stream after 5 min or 300 messages so one open
         // tab never parks a pool thread forever. Browser auto-reconnects.
         runCatching { client.soTimeout = 310_000 }
+        // soTimeout only affects reads and this socket never reads again, so a
+        // remotely-gone tab would otherwise park a thread + FD until the 5min
+        // cap. Heartbeat comments force a prompt write failure on dead peers.
         try {
-            var n = 0
-            kotlinx.coroutines.withTimeoutOrNull(5 * 60 * 1000L) {
-                AppState.status.collect { value ->
-                    if (!running.get() || client.isClosed) throw IOException("stream closed")
-                    val line = "data: ${escapeSse(value)}\n\n"
-                    output.write(line.toByteArray(Charsets.UTF_8))
-                    output.flush()
-                    if (++n > 300) throw IOException("stream ttl")
+            kotlinx.coroutines.coroutineScope {
+                val beat = launch {
+                    while (true) {
+                        kotlinx.coroutines.delay(20_000L)
+                        synchronized(output) {
+                            output.write(": ping\n\n".toByteArray(Charsets.UTF_8))
+                            output.flush()
+                        }
+                        if (!running.get() || client.isClosed) throw IOException("stream closed")
+                    }
+                }
+                try {
+                    var n = 0
+                    kotlinx.coroutines.withTimeoutOrNull(5 * 60 * 1000L) {
+                        AppState.status.collect { value ->
+                            if (!running.get() || client.isClosed) throw IOException("stream closed")
+                            val line = "data: ${escapeSse(value)}\n\n"
+                            synchronized(output) {
+                                output.write(line.toByteArray(Charsets.UTF_8))
+                                output.flush()
+                            }
+                            if (++n > 300) throw IOException("stream ttl")
+                        }
+                    }
+                } finally {
+                    beat.cancel()
                 }
             }
         } catch (_: Exception) {
@@ -215,7 +242,10 @@ class PanelServer(
     private fun writeIcon(output: BufferedOutputStream) {
         try {
             val resId = context.resources.getIdentifier("ic_launcher_legacy", "drawable", context.packageName)
-            if (resId == 0) return
+            if (resId == 0) {
+                writeNotFound(output)
+                return
+            }
             context.resources.openRawResource(resId).use { ins ->
                 val bytes = ins.readBytes()
                 val header = "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n" +
@@ -225,6 +255,19 @@ class PanelServer(
                 output.flush()
             }
         } catch (_: Exception) {
+            runCatching { writeNotFound(output) }
+        }
+    }
+
+    private fun writeNotFound(output: BufferedOutputStream) {
+        runCatching {
+            val body = "Not Found"
+            val bytes = body.toByteArray(Charsets.UTF_8)
+            val header = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\n" +
+                "Content-Length: ${bytes.size}\r\nConnection: close\r\n\r\n"
+            output.write(header.toByteArray(Charsets.UTF_8))
+            output.write(bytes)
+            output.flush()
         }
     }
 
