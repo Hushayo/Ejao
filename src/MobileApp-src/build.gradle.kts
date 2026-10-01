@@ -6,7 +6,9 @@ plugins {
 
 android {
     namespace = "com.ejao.proxy"
-    compileSdk = 36
+    // compileSdk 37: required by androidx.core 1.19.x AAR metadata.
+    // targetSdk stays 36 (Play requirement, stable runtime behavior).
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.ejao.proxy"
