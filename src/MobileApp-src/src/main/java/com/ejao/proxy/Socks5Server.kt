@@ -106,6 +106,7 @@ class Socks5Server(
 
     private class UdpSession(val socket: DatagramSocket) {
         @Volatile var lastActivity = System.currentTimeMillis()
+        @Volatile var boundNet: Network? = null
         val tx = AtomicLong(0L)
         val rx = AtomicLong(0L)
     }
@@ -163,6 +164,8 @@ class Socks5Server(
         try {
             val sock = DatagramSocket(null)
             sock.reuseAddress = true
+            runCatching { sock.receiveBufferSize = 2 * 1024 * 1024 }
+            runCatching { sock.sendBufferSize = socketSndBuf }
             sock.bind(InetSocketAddress("0.0.0.0", port))
             udpSocket = sock
             val buf = ByteArray(65535)
@@ -350,6 +353,12 @@ class Socks5Server(
     }
 
     private suspend fun handleUdpAssociate(client: Socket, input: DataInputStream, output: DataOutputStream) {
+        // Gaming fix: this TCP connection IS the UDP session lifetime for
+        // ProxiFyre. The old 300s soTimeout (set in handleTcpClient) killed
+        // it mid-game (~5min idle on TCP while UDP was active), tearing down
+        // the whole UDP mapping. Infinite timeout + keepalive here.
+        runCatching { client.soTimeout = 0 }
+        runCatching { client.keepAlive = true }
         val relayAddr = InetAddress.getByName(advertiseIp)
         output.writeByte(0x05); output.writeByte(0x00); output.writeByte(0x00)
         output.writeByte(0x01) // IPv4
@@ -359,7 +368,13 @@ class Socks5Server(
         onLog("UDP associate from ${client.inetAddress.hostAddress}:${client.port}")
         try {
             val b = ByteArray(1)
-            input.read(b) // blocks until client closes
+            // Loop, don't single-read: some clients send keepalive bytes on
+            // the ASSOCIATE TCP. Old code closed the mapping on the first
+            // such byte. Stay open until EOF/error (client really gone).
+            while (running.get()) {
+                val n = input.read(b)
+                if (n < 0) break
+            }
         } catch (_: Exception) {
         }
         runCatching { client.close() }
@@ -379,11 +394,18 @@ class Socks5Server(
             val atyp = data[3].toInt() and 0xff
             var idx = 4
             val dstHost: String
+            // Gaming fast-path: ATYP IPv4 carries raw bytes - keep them as an
+            // InetAddress so we skip DNS entirely for game traffic (which is
+            // ~all raw IPs). Old code stringified then re-resolved every
+            // packet via Network.getAllByName = binder + pool per datagram.
+            var dstInet: InetAddress? = null
             when (atyp) {
                 0x01 -> {
                     if (data.size < idx + 4 + 2) return
-                    dstHost = "${data[idx].toInt() and 0xff}.${data[idx + 1].toInt() and 0xff}." +
-                        "${data[idx + 2].toInt() and 0xff}.${data[idx + 3].toInt() and 0xff}"
+                    val ipBytes = byteArrayOf(data[idx], data[idx + 1], data[idx + 2], data[idx + 3])
+                    dstHost = "${ipBytes[0].toInt() and 0xff}.${ipBytes[1].toInt() and 0xff}." +
+                        "${ipBytes[2].toInt() and 0xff}.${ipBytes[3].toInt() and 0xff}"
+                    dstInet = runCatching { InetAddress.getByAddress(ipBytes) }.getOrNull()
                     idx += 4
                 }
                 0x03 -> {
@@ -392,6 +414,9 @@ class Socks5Server(
                     if (data.size < idx + len + 2) return
                     dstHost = String(data, idx, len)
                     idx += len
+                    // Domain that is actually an IP literal (ProxiFyre sends
+                    // these a lot): parse locally, no DNS binder call.
+                    dstInet = parseIpv4LiteralFast(dstHost)
                 }
                 0x04 -> {
                     // IPv6 targets unsupported (IPv4-only egress): count it so
@@ -420,12 +445,14 @@ class Socks5Server(
                     DatagramSocket().also {
                         net?.bindSocket(it)
                         it.soTimeout = 1000
+                        runCatching { it.receiveBufferSize = socketRcvBuf }
+                        runCatching { it.sendBufferSize = socketSndBuf }
                     }
                 } catch (e: Exception) {
                     onLog("UDP session create fail: ${e.message}")
                     return
                 }
-                val newSession = UdpSession(fwd)
+                val newSession = UdpSession(fwd).also { it.boundNet = net }
                 val prev = udpSessions.putIfAbsent(clientKey, newSession)
                 if (prev == null) {
                     sessionNow = newSession
@@ -449,11 +476,10 @@ class Socks5Server(
             }
             session.lastActivity = System.currentTimeMillis()
             try {
-                // Same 3-step fallback as TCP CONNECT: picked net, then fresh
-                // cellular, then system default. UDP previously tried only the
-                // picked net, so after a handover every datagram was dropped
-                // until something else re-picked the network.
-                val dstAddr = try {
+                // Fast-path: raw IP needs no DNS. Slow-path keeps the same
+                // 3-step fallback as TCP CONNECT: picked net, then fresh
+                // cellular, then system default.
+                val dstAddr: InetAddress = dstInet ?: try {
                     resolve(dstHost, net).first()
                 } catch (_: Exception) {
                     val fresh = runCatching { NetworkUtils.pickCellular(cm, null) }.getOrNull()
@@ -471,6 +497,13 @@ class Socks5Server(
                     ClientUsage.add(clientAddr.hostAddress ?: "", payload.size.toLong())
                 } catch (e: Exception) {
                     EgressManager.reportFailure(dstHost)
+                    // Egress socket was bound to the old Network at creation.
+                    // After a cellular handover it blackholes until the 5min
+                    // sweep. Drop it now so the next packet rebuilds on the
+                    // fresh net (1-packet recovery). Reply loop exits on close.
+                    if (udpSessions.remove(clientKey, session)) {
+                        runCatching { session.socket.close() }
+                    }
                     onLog("UDP send fail $dstHost:$dstPort via $net: ${e.message}")
                 }
             } catch (e: Exception) {
@@ -485,6 +518,33 @@ class Socks5Server(
         if (udpSessions.size < maxUdpSessions) return
         val oldest = udpSessions.entries.minByOrNull { it.value.lastActivity } ?: return
         if (udpSessions.remove(oldest.key, oldest.value)) runCatching { oldest.value.socket.close() }
+    }
+
+    private fun parseIpv4LiteralFast(host: String): InetAddress? {
+        // No regex, no DNS: strict a.b.c.d (0-255 each). Null = not a literal.
+        var parts = 0
+        var val_ = 0
+        var digits = 0
+        val out = ByteArray(4)
+        for (i in host.indices) {
+            val c = host[i]
+            if (c in '0'..'9') {
+                val_ = val_ * 10 + (c - '0')
+                if (val_ > 255) return null
+                digits++
+                if (digits > 3) return null
+            } else if (c == '.') {
+                if (digits == 0 || parts >= 3) return null
+                out[parts++] = val_.toByte()
+                val_ = 0
+                digits = 0
+            } else {
+                return null
+            }
+        }
+        if (parts != 3 || digits == 0) return null
+        out[3] = val_.toByte()
+        return runCatching { InetAddress.getByAddress(out) }.getOrNull()
     }
 
     private suspend fun runUdpSweep() {

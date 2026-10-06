@@ -40,7 +40,7 @@ Full setup guide, config reference and keep-alive details live in the
 3. Connect your PC to that WIFI with your set password.
 4. Here you have two options,
 -> Have HTTP only (browses web only, no external programs unless those support WinHTTP) just do Settings → Network → Proxy → manual `192.168.49.1:8282` here's image if you don't prefer text [wiki](https://github.com/Hushayo/Ejao/wiki/Windows-Connect).
--> or have the SOCKS5 (wiki tutor will be here soon)
+-> or have the SOCKS5 TCP+UDP via ProxiFyre/Proxifier at `192.168.49.1:1080` (tick UDP) — setup here [wiki](https://github.com/Hushayo/Ejao/wiki/PC-Client).
 
 ## Constraints 
 
