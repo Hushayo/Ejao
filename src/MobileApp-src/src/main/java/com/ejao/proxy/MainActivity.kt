@@ -291,6 +291,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * AprilFool: exiting (Home, recents, Back, opening Settings/browser)
+     * destroys the Activity, so the next entry is always a cold launch
+     * behind the triple-tap gate. Rotation is exempt, otherwise every
+     * rotate would eat the session. The proxy Service is unaffected.
+     */
+    override fun onStop() {
+        super.onStop()
+        if (!isChangingConfigurations) {
+            runCatching { finish() }
+        }
+    }
+
+    /**
      * AprilFool silent gate: true = this is the 3rd cold tap, open the real
      * app. False = taps 1-2, caller finishes before setContentView so the
      * launch looks like a dead SIM Toolkit doing nothing. No toast, no UI.
