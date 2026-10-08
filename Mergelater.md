@@ -3,6 +3,20 @@
 Merge the **WiFi guard helper ONLY** into `main`. The AprilFool prank
 (SIM Toolkit disguise, triple-tap gate) stays on the `AprilFool` branch.
 
+## Automatic (scheduled workflow)
+
+`guard-merge-once.yml` fires 12 Oct 2026, 00:00 UTC (08:00 +08:00) and
+cherry-picks the two commits below onto `main` as ONE commit, then pushes.
+Idempotent: no-ops if the guard is already there (also safe yearly).
+No `[Trigger]` in its message, so it merges without publishing a release.
+
+REQUIRED: that file must exist on `main` for the timer to fire (GitHub
+runs schedules from the default branch). If it only lives on `AprilFool`,
+use manual dispatch instead (Actions -> One-time guard merge -> Run
+workflow), or the manual recipe below.
+
+## Manual fallback
+
 ## Commits to bring over
 
 - `543a6bd` — AprilFool: ADB wifi guard daemon (no extra app)

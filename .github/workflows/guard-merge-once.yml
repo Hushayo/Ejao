@@ -1,0 +1,53 @@
+name: One-time guard merge (12 Oct 2026)
+
+# Merges ONLY the WiFi guard helper from AprilFool into main, once.
+# The AprilFool prank stays behind. Idempotent: exits quietly if the guard
+# is already on main (this also stops it re-firing every 12 Oct).
+#
+# NOTE: GitHub runs scheduled workflows from the default branch, so this
+# file must exist on main for the timer to fire. Manual dispatch works
+# from any branch that has the file (it still merges onto main).
+#
+# The merge commit has NO [Trigger], so no release builds - merge only.
+
+on:
+  schedule:
+    # 12 Oct 2026, 00:00 UTC (08:00 +08:00).
+    - cron: "0 0 12 10 *"
+  workflow_dispatch:
+
+concurrency:
+  group: guard-merge-once
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout main (full history)
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Skip if guard already merged
+        id: check
+        run: |
+          if [ -f src/MobileApp-src/src/main/java/com/ejao/proxy/WifiGuard.kt ]; then
+            echo "merged=true" >> "$GITHUB_OUTPUT"
+            echo "Guard already on main - nothing to do."
+          else
+            echo "merged=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Cherry-pick guard as one commit
+        if: steps.check.outputs.merged == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin AprilFool
+          git cherry-pick --no-commit 543a6bd 8e7a700
+          git commit -m "ADB wifi guard daemon + customizable interval"
+          git push origin main
