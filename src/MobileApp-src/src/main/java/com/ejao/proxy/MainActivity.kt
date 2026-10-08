@@ -1,6 +1,8 @@
 package com.ejao.proxy
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -86,6 +88,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tilUpdateCheckInterval: com.google.android.material.textfield.TextInputLayout
     private lateinit var etUpdateCheckInterval: AutoCompleteTextView
     private lateinit var swAutoUpdate: SwitchMaterial
+    private lateinit var tvGuardStatus: TextView
 
     private val saveHandler = Handler(Looper.getMainLooper())
     private val autosaveRunnable = Runnable { autosave() }
@@ -223,6 +226,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnWiki).setOnClickListener { runCatching { openWiki() } }
         findViewById<Button>(R.id.btnBattery).setOnClickListener { runCatching { requestBatteryExemption() } }
         findViewById<Button>(R.id.btnAutostart).setOnClickListener { runCatching { openAutostartSettings() } }
+        runCatching { setupWifiGuard() }
 
         btnCheckUpdate = findViewById(R.id.btnCheckUpdate)
         tvUpdateStatus = findViewById(R.id.tvUpdateStatus)
@@ -283,6 +287,11 @@ class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         Log.i(TAG, "onStart - passwordLength=${etPass.text.length}, running=${AppState.running.value}")
+    }
+
+    override fun onResume() {
+        super.onResume()
+        runCatching { refreshGuardStatus() }
     }
 
     override fun onDestroy() {
@@ -947,6 +956,44 @@ class MainActivity : AppCompatActivity() {
             Log.e(TAG, "open wiki failed", e)
             runCatching {
                 Toast.makeText(this, "No browser found", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun refreshGuardStatus() {
+        runCatching {
+            if (::tvGuardStatus.isInitialized) tvGuardStatus.text = WifiGuard.statusLine(this)
+        }
+    }
+
+    /**
+     * AprilFool ADB WiFi guard card: copy the one-liner for the PC, or drop a
+     * request file the shell-side daemon picks up within ~30s. Read-only when
+     * the daemon was never started (status line says so).
+     */
+    private fun setupWifiGuard() {
+        tvGuardStatus = findViewById(R.id.tvGuardStatus)
+        refreshGuardStatus()
+        findViewById<Button>(R.id.btnGuardCopy).setOnClickListener {
+            runCatching {
+                val cmd = WifiGuard.adbCommand(this)
+                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(ClipData.newPlainText("ejao-guard", cmd))
+                Toast.makeText(this, "Guard command copied - paste it on a PC with USB debugging", Toast.LENGTH_LONG).show()
+            }.onFailure { e ->
+                Log.e(TAG, "guard copy failed", e)
+            }
+        }
+        findViewById<Button>(R.id.btnGuardRequest).setOnClickListener {
+            runCatching {
+                if (WifiGuard.requestWifiOn(this)) {
+                    Toast.makeText(this, "Requested - guard picks it up within ~30s", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, "Couldn't write the request file", Toast.LENGTH_LONG).show()
+                }
+                refreshGuardStatus()
+            }.onFailure { e ->
+                Log.e(TAG, "guard request failed", e)
             }
         }
     }

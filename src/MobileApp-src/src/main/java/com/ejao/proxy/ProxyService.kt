@@ -195,7 +195,10 @@ class ProxyService : Service() {
                 if (config.autoRestartOnWifiReturn) {
                     while (!wifiOk && started.get()) {
                         if (!ConfigManager.load(this@ProxyService).autoRestartOnWifiReturn) break
-                        updateStatus("WiFi is off - waiting for it to return before (re)starting the proxy...")
+                        // AprilFool WiFi guard: no-op file when the ADB daemon
+                        // isn't running; picked up within ~30s when it is.
+                        runCatching { WifiGuard.requestWifiOn(this@ProxyService) }
+                        updateStatus("WiFi is off - waiting for it to return (ADB guard requested)...")
                         delay(5000)
                         wifiOk = p2p.ensureWifiOn()
                     }
