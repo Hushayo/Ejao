@@ -1004,6 +1004,18 @@ class MainActivity : AppCompatActivity() {
                 Log.e(TAG, "guard request failed", e)
             }
         }
+        findViewById<Button>(R.id.btnGuardStop).setOnClickListener {
+            runCatching {
+                if (WifiGuard.stopGuard(this)) {
+                    Toast.makeText(this, "Stop requested - guard exits within ~30s", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, "Couldn't write the stop file", Toast.LENGTH_LONG).show()
+                }
+                refreshGuardStatus()
+            }.onFailure { e ->
+                Log.e(TAG, "guard stop failed", e)
+            }
+        }
     }
 
     /**

@@ -24,6 +24,7 @@ object WifiGuardDaemon {
     private const val MIN_INTERVAL_SEC = 60L
     private const val HEARTBEAT_FILE = "guard_heartbeat.txt"
     private const val REQUEST_FILE = "guard_request_wifi"
+    private const val STOP_FILE = "guard_stop"
 
     @JvmStatic
     fun main(args: Array<String>) {
@@ -61,6 +62,11 @@ object WifiGuardDaemon {
         var lastPeriodic = 0L
         while (true) {
             try {
+                if (java.io.File(guardDir, STOP_FILE).exists()) {
+                    runCatching { java.io.File(guardDir, STOP_FILE).delete() }
+                    println("guard: stop requested, exiting")
+                    return
+                }
                 val now = System.currentTimeMillis()
                 val req = java.io.File(guardDir, REQUEST_FILE)
                 if (req.exists() || now - lastPeriodic >= intervalSec * 1000L) {

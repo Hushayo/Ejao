@@ -14,6 +14,7 @@ import java.io.File
 object WifiGuard {
     const val HEARTBEAT_FILE = "guard_heartbeat.txt"
     const val REQUEST_FILE = "guard_request_wifi"
+    const val STOP_FILE = "guard_stop"
     const val DEFAULT_INTERVAL_SEC = 600L
     const val MIN_INTERVAL_SEC = 60L
     // Daemon beats every POLL (30s); stale after half an interval of silence.
@@ -94,6 +95,18 @@ object WifiGuard {
             val d = guardDir(context)
             if (!d.exists()) d.mkdirs()
             File(d, REQUEST_FILE).writeText(System.currentTimeMillis().toString())
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /** Asks a running daemon to exit (picked up within ~30s). Never throws. */
+    fun stopGuard(context: Context): Boolean {
+        return try {
+            val d = guardDir(context)
+            if (!d.exists()) d.mkdirs()
+            File(d, STOP_FILE).writeText(System.currentTimeMillis().toString())
             true
         } catch (_: Exception) {
             false

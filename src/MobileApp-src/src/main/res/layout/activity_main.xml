@@ -702,11 +702,26 @@
                     android:textStyle="bold"
                     app:backgroundTint="@null" />
 
+                <Button
+                    android:id="@+id/btnGuardStop"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:background="@drawable/bg_button_secondary"
+                    android:fontFamily="sans-serif-medium"
+                    android:minHeight="50dp"
+                    android:text="STOP GUARD"
+                    android:textAllCaps="false"
+                    android:textColor="@color/text_primary"
+                    android:textSize="14sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="@null" />
+
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
-                    android:text="Paste the command on a PC with USB debugging to start a shell-side guard: it turns WiFi back on every 10 min and on request. No extra app. Re-run after reboot / update. Check status here ~40s after starting."
+                    android:text="Paste the command on a PC with USB debugging to start a shell-side guard: it turns WiFi back on every interval and on request. No extra app. Stop it anytime with STOP GUARD (or reboot). Re-run after reboot / update. Check status here ~40s after starting."
                     android:textColor="@color/text_secondary"
                     android:textSize="12sp" />
             </LinearLayout>
