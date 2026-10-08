@@ -21,6 +21,7 @@ workflow), or the manual recipe below.
 
 - `543a6bd` — AprilFool: ADB wifi guard daemon (no extra app)
 - `8e7a700` — AprilFool: customizable guard interval (seconds/minutes/hours)
+- `36cf106` — AprilFool: STOP GUARD button + stop file
 
 Skip the empty `[Trigger] AprilFool pre-release build` commits (nothing in them).
 Verified 9 Oct 2026: both cherry-pick onto `main` with zero conflicts.
@@ -31,7 +32,7 @@ Single commit on `main` (no history rewrite needed on this branch):
 
 ```
 git checkout main
-git cherry-pick --no-commit 543a6bd 8e7a700
+git cherry-pick --no-commit 543a6bd 8e7a700 36cf106
 git commit -m "ADB wifi guard daemon + customizable interval"
 git push origin main
 ```
