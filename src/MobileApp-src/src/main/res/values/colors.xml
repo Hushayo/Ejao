@@ -24,4 +24,8 @@
         theme colors change (reusing @color/primary turned the icon
         white-on-off-white and invisible). -->
     <color name="ic_launcher_background">#171412</color>
+
+    <!-- AprilFool only: light system-grey background so the disguised
+        SIM Toolkit icon blends in with real system apps. -->
+    <color name="sim_toolkit_background">#E0E0E0</color>
 </resources>

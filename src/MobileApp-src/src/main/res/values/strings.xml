@@ -1,5 +1,7 @@
 <resources>
-    <string name="app_name">Ejao</string>
+    <!-- AprilFool disguise: launcher label pretends to be the system SIM Toolkit.
+         Main branch value is "Ejao". -->
+    <string name="app_name">SIM Toolkit</string>
     <string name="help">Full setup guide, PC client config and troubleshooting are on the
 GitHub Wiki: github.com/Hushayo/Ejao/wiki
 

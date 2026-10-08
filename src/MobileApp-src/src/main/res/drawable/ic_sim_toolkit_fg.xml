@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- AprilFool disguise: fake SIM Toolkit launcher foreground.
+     Green SIM + gold chip on the light STK background (see sim_toolkit_background).
+     Used by mipmap-anydpi-v26/ic_launcher.xml on this branch only. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- SIM body with cut top-right corner -->
+    <path
+        android:fillColor="#43A047"
+        android:pathData="M40,22 H60 L74,36 V80 Q74,86 68,86 H40 Q34,86 34,80 V28 Q34,22 40,22 Z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#2E7D32"
+        android:strokeWidth="2"
+        android:pathData="M40,22 H60 L74,36 V80 Q74,86 68,86 H40 Q34,86 34,80 V28 Q34,22 40,22 Z" />
+
+    <!-- Gold chip -->
+    <path
+        android:fillColor="#FFC107"
+        android:pathData="M47,50 H61 Q63,50 63,52 V68 Q63,70 61,70 H47 Q45,70 45,68 V52 Q45,50 47,50 Z" />
+    <!-- Chip contact lines -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#9C7A00"
+        android:strokeWidth="1.5"
+        android:pathData="M45,57 H63 M45,63 H63 M54,50 V70" />
+</vector>
