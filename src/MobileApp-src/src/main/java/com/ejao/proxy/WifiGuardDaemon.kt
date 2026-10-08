@@ -55,7 +55,7 @@ object WifiGuardDaemon {
         println("guard: up dir=$guardDir interval=${intervalSec}s uid=${ownUid()}")
         if (once) {
             enableWifi()
-            writeHeartbeat(guardDir)
+            writeHeartbeat(guardDir, intervalSec)
             return
         }
         var lastPeriodic = 0L
@@ -69,7 +69,7 @@ object WifiGuardDaemon {
                     lastPeriodic = now
                     runCatching { if (req.exists()) req.delete() }
                 }
-                writeHeartbeat(guardDir)
+                writeHeartbeat(guardDir, intervalSec)
             } catch (t: Throwable) {
                 println("guard: loop slipped: ${t.message}")
             }
@@ -113,9 +113,12 @@ object WifiGuardDaemon {
         }
     }
 
-    private fun writeHeartbeat(dir: java.io.File) {
+    private fun writeHeartbeat(dir: java.io.File, intervalSec: Long) {
         try {
-            java.io.File(dir, HEARTBEAT_FILE).writeText(System.currentTimeMillis().toString())
+            // "<epochMs> <intervalSec>": the app shows the daemon's actual
+            // cadence from the second token (absent in older heartbeats).
+            java.io.File(dir, HEARTBEAT_FILE)
+                .writeText("${System.currentTimeMillis()} $intervalSec")
         } catch (e: Exception) {
             println("guard: heartbeat failed: ${e.message}")
         }
