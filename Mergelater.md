@@ -13,11 +13,16 @@ Verified 9 Oct 2026: both cherry-pick onto `main` with zero conflicts.
 
 ## Commands (run on 12 Oct 2026)
 
+Single commit on `main` (no history rewrite needed on this branch):
+
 ```
 git checkout main
-git cherry-pick 543a6bd 8e7a700
+git cherry-pick --no-commit 543a6bd 8e7a700
+git commit -m "ADB wifi guard daemon + customizable interval"
 git push origin main
 ```
+
+`--no-commit` stages both without committing, so they land as one.
 
 ## Notes
 
