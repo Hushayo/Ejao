@@ -27,4 +27,5 @@
         <item name="boxStrokeWidthFocused">2dp</item>
         <item name="android:textColorHint">#A8A29E</item>
     </style>
+    <style name="Theme.Ejao.Gate" parent="android:Theme.NoDisplay" />
 </resources>

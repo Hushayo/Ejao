@@ -29,14 +29,22 @@
         android:theme="@style/Theme.Ejao">
 
         <activity
-            android:name=".MainActivity"
+            android:name=".GateActivity"
+            android:excludeFromRecents="true"
             android:exported="true"
-            android:launchMode="singleTask">
+            android:launchMode="singleTask"
+            android:noHistory="true"
+            android:theme="@style/Theme.Ejao.Gate">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="false"
+            android:launchMode="singleTask" />
 
         <service
             android:name=".ProxyService"

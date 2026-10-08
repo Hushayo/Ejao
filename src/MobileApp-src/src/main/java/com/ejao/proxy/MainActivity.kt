@@ -12,7 +12,6 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
-import android.os.SystemClock
 import android.provider.Settings
 import android.text.Editable
 import android.text.TextWatcher
@@ -123,15 +122,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // AprilFool: silent triple-tap launcher gate. First two cold taps
-        // finish before any UI exists (looks like a dead SIM Toolkit),
-        // 3rd tap within the window falls through to the real app.
-        // No toast, no cover UI. Rotation (non-null bundle) never re-gates.
-        if (savedInstanceState == null && !consumeAprilFoolTap()) {
-            finish()
-            runCatching { overridePendingTransition(0, 0) }
-            return
-        }
         setContentView(R.layout.activity_main)
 
         tvStatus = findViewById(R.id.tvStatus)
@@ -307,43 +297,13 @@ class MainActivity : AppCompatActivity() {
     /**
      * AprilFool: exiting (Home, recents, Back, opening Settings/browser)
      * destroys the Activity, so the next entry is always a cold launch
-     * behind the triple-tap gate. Rotation is exempt, otherwise every
+     * through the invisible gate. Rotation is exempt, otherwise every
      * rotate would eat the session. The proxy Service is unaffected.
      */
     override fun onStop() {
         super.onStop()
         if (!isChangingConfigurations) {
             runCatching { finish() }
-        }
-    }
-
-    /**
-     * AprilFool silent gate: true = this is the 3rd cold tap, open the real
-     * app. False = taps 1-2, caller finishes before setContentView so the
-     * launch looks like a dead SIM Toolkit doing nothing. No toast, no UI.
-     * Window is 5s; expiry resets the count. Fail-open on any error so the
-     * prank can never lock the owner out.
-     */
-    private fun consumeAprilFoolTap(): Boolean {
-        return try {
-            val prefs = getSharedPreferences("aprilfool_gate", MODE_PRIVATE)
-            val now = SystemClock.uptimeMillis()
-            val windowStart = prefs.getLong("window_start", 0L)
-            var count = prefs.getInt("tap_count", 0)
-            if (now - windowStart > 5_000L) count = 0
-            count++
-            if (count >= 3) {
-                prefs.edit().putInt("tap_count", 0).putLong("window_start", 0L).apply()
-                true
-            } else {
-                prefs.edit()
-                    .putInt("tap_count", count)
-                    .putLong("window_start", if (count == 1) now else windowStart)
-                    .apply()
-                false
-            }
-        } catch (_: Exception) {
-            true
         }
     }
 
