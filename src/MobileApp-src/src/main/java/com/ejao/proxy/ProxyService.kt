@@ -965,10 +965,12 @@ class ProxyService : Service() {
                     }
                     delay(2000) // let the async callbacks land
                     if (accepted.get()) break
-                    // Hard error (not BUSY): retrying won't help, bail to the
-                    // formation poll below which reports the outcome.
-                    if (!reply.contains("busy", ignoreCase = true)) break
-                    Log.w(TAG, "recreateGroup BUSY on attempt ${attempt + 1} - backing off")
+                    // Only P2P_UNSUPPORTED is permanent (device has no WiFi
+                    // Direct). BUSY and generic ERROR are both transient -
+                    // ERROR clears once the old group teardown finishes, so
+                    // back off and retry those too instead of giving up.
+                    if (reply.contains("no WiFi Direct support", ignoreCase = true)) break
+                    Log.w(TAG, "recreateGroup rejected ($reply) on attempt ${attempt + 1} - backing off")
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "recreateGroup remove/create failed: ${e.message}")
@@ -1142,6 +1144,12 @@ class ProxyService : Service() {
     }
 
     private fun acquireLocks() {
+        // Never orphan the previous locks: overwriting them without release
+        // lets GC finalize them while held (see "WakeLock finalized while
+        // still held" in logcat), which hands the CPU back to Doze and the
+        // P2P group dies minutes after the app leaves the foreground.
+        // acquireLocks runs on every pipeline (re)start, so release first.
+        runCatching { releaseLocks() }
         try {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
             wakeLock = runCatching {
