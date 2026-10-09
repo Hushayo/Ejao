@@ -411,6 +411,10 @@ class ProxyService : Service() {
             var groupRecreateCount = 0
             val groupRecreateMax = 21
             var groupMissStreak = 0
+            // Consecutive "group null but p2p interface still addressed"
+            // verdicts. Past this we stop trusting the interface and reform
+            // anyway, in case an address lingers on a dead interface.
+            var ifaceHoldStreak = 0
             var downStreak = 0
             var lastClientCount = -1
             var lastRx = readP2pBytes()?.first ?: -1L
@@ -489,6 +493,22 @@ class ProxyService : Service() {
                                 "AP signal lost - holding connections ($groupMissStreak/3)..."
                             return@requestGroupInfo
                         }
+                        // requestGroupInfo can lie transiently on Vivo (null
+                        // while clients stay associated and the AP is fine).
+                        // If a P2P interface still holds an address, the group
+                        // is alive - destroying it here is what causes the
+                        // BUSY storm, so hold instead of recreating.
+                        if (p2p.hasP2pAddress()) {
+                            ifaceHoldStreak++
+                            if (ifaceHoldStreak <= 6) {
+                                Log.w(TAG, "group info null but p2p iface still up ($ifaceHoldStreak/6) - holding, not recreating")
+                                groupMissStreak = 0
+                                AppState.status.value = "AP signal flicker - holding connections..."
+                                return@requestGroupInfo
+                            }
+                            Log.w(TAG, "group info null for a while despite p2p addr - reforming anyway")
+                        }
+                        ifaceHoldStreak = 0
                         AppState.isReforming.value = true
                         AppState.status.value = "AP re-forming - draining..."
                         if (started.get() && groupRecreateGuard.compareAndSet(false, true)) {
@@ -513,6 +533,7 @@ class ProxyService : Service() {
                         AppState.status.value = "RUNNING - AP re-forming..."
                     } else {
                         groupMissStreak = 0
+                        ifaceHoldStreak = 0
                         AppState.isReforming.value = false
                         try {
                             val goIpNow = AppState.apInfo.value.goIp.ifEmpty { goIp }
@@ -601,6 +622,35 @@ class ProxyService : Service() {
                             val realCount = list.size
                             AppState.apInfo.value = AppState.apInfo.value.copy(clients = realCount)
                             AppState.lanClients.value = list
+                            // P2P keepalive: Vivo kills idle GO groups within
+                            // minutes even with clients associated (phone-side
+                            // keepalive ping goes over cellular, so the P2P
+                            // link looks dead). Ping clients + our GO IP every
+                            // ~20s so the link always carries traffic - same
+                            // trick as PC-side ping -t, but self-sufficient.
+                            if (tick % 20 == 0) {
+                                val targets = (list.mapNotNull {
+                                    it.ip.takeIf { ip -> ip.contains(".") }
+                                } + goIpNow).filter { it.isNotEmpty() }
+                                    .distinct().take(8)
+                                if (targets.isNotEmpty()) {
+                                    scope.launch {
+                                        runCatching {
+                                            kotlinx.coroutines.withContext(
+                                                kotlinx.coroutines.Dispatchers.IO
+                                            ) {
+                                                for (ip in targets) {
+                                                    runCatching {
+                                                        java.net.InetAddress.getByName(ip)
+                                                            .isReachable(1500)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Log.i(TAG, "p2p keepalive pinged ${targets.size} target(s)")
+                                    }
+                                }
+                            }
                         } catch (_: Exception) {
                         }
                         if (proxyDownNotified && backupPanelPortActual > 0) {

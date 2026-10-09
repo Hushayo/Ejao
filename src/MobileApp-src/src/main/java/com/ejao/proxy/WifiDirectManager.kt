@@ -159,6 +159,20 @@ class WifiDirectManager(private val context: Context) {
         manager.requestGroupInfo(channel, onInfo)
     }
 
+    /** True if any P2P interface currently holds an IPv4 - used to tell a
+     * transiently-null requestGroupInfo (group alive, must not destroy) from
+     * a genuinely torn-down group. */
+    fun hasP2pAddress(): Boolean {
+        for (name in listOf("p2p0", "p2p-wlan0-0", "p2p-wlan0-1", "p2p-wlan0-2")) {
+            try {
+                val nif = NetworkInterface.getByName(name) ?: continue
+                if (nif.inetAddresses.asSequence().any { it.address.size == 4 }) return true
+            } catch (_: Exception) {
+            }
+        }
+        return false
+    }
+
     fun getGroupOwnerIp(): String {
         val candidates = listOf("p2p0", "p2p-wlan0-0", "p2p-wlan0-1", "p2p-wlan0-2")
         for (name in candidates) {
