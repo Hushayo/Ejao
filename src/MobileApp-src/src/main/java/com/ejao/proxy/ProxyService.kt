@@ -241,6 +241,15 @@ class ProxyService : Service() {
             // stopSelf() used to kill the service + cancel the watchdog, so
             // one slow callback meant manual restart at the phone.
             updateStatus("Creating WiFi Direct group...")
+            // Fresh pipeline (process restart, update, crash): the dead
+            // process may still hold a P2P group that requestGroupInfo can
+            // no longer see, so the conditional remove inside the loop
+            // skips and every create comes back ERROR until a manual
+            // STOP/START clears it. Unconditional remove + settle first.
+            Log.i(TAG, "pipeline start: clearing any stale P2P group before first create")
+            runCatching { p2p.removeGroup { } }
+            delay(4000)
+            if (!started.get() || pipelineGen.get() != myGen) return
             var groupSsid = ""
             var groupPass = ""
             var groupReady = false
