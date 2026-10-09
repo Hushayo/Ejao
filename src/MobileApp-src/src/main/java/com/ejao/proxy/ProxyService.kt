@@ -286,39 +286,38 @@ class ProxyService : Service() {
             while (!groupReady && attempt < maxGroupAttempts) {
                 if (!started.get() || pipelineGen.get() != myGen) return
                 attempt++
-                // Fresh manager per attempt: the old channel can go stale
-                // after hours in Doze; a new initialize() recovers it.
-                val attemptP2p = if (attempt == 1) p2p else WifiDirectManager(this)
+                // Self-contained attempt on a FRESH channel, mirroring exactly
+                // what manual STOP (onDestroy) + START does - the only
+                // sequence proven to unwedge this stack: unconditional
+                // remove, confirm gone, then create. Reusing old channels or
+                // conditional (group-info-gated) removes is what ERROR-storms
+                // for 45s+ while a manual tap works instantly.
+                val attemptP2p = WifiDirectManager(this)
                 val createOk = AtomicBoolean(false)
                 var createMsg = ""
-                val removeDone = AtomicBoolean(false)
-                runCatching {
-                    attemptP2p.removeExistingGroup {
-                        removeDone.set(true)
-                        val band = if (config.disableBandSelector) "2.4" else config.band
-                        attemptP2p.createGroup(config.ssid, config.password, band) { ok, msg ->
-                            createMsg = msg
-                            createOk.set(ok)
-                            Log.i(TAG, "createGroup attempt=$attempt result ok=$ok msg=$msg band=$band")
-                        }
-                    }
-                }
-                // If removeExistingGroup's callback never arrives (dead
-                // channel), don't hang forever: fall through and try create
-                // directly after a timeout.
-                var removeWaited = 0
-                while (!removeDone.get() && !createOk.get() && removeWaited < 5000) {
-                    delay(200); removeWaited += 200
-                }
-                if (!removeDone.get() && !createOk.get()) {
-                    Log.w(TAG, "removeExistingGroup callback timed out (attempt $attempt) - trying createGroup directly")
+                Log.i(TAG, "createGroup attempt=$attempt clearing group first (p2pUp=${attemptP2p.hasP2pAddress()})")
+                runCatching { attemptP2p.removeGroup { } }
+                // Wait for the old group to actually disappear (up to 8s).
+                var goneWaited = 0
+                while (goneWaited < 8000) {
+                    if (!started.get() || pipelineGen.get() != myGen) return
+                    var seen: Boolean? = null
+                    val gg = AtomicBoolean(false)
                     runCatching {
-                        val band = if (config.disableBandSelector) "2.4" else config.band
-                        attemptP2p.createGroup(config.ssid, config.password, band) { ok, msg ->
-                            createMsg = msg
-                            createOk.set(ok)
-                            Log.i(TAG, "createGroup direct attempt=$attempt ok=$ok msg=$msg")
-                        }
+                        attemptP2p.requestGroupInfo { g -> gg.set(true); seen = (g != null) }
+                    }
+                    var lw = 0
+                    while (!gg.get() && lw < 1500) { delay(100); lw += 100 }
+                    if (gg.get() && seen == false) break
+                    delay(500); goneWaited += 500
+                }
+                Log.i(TAG, "createGroup attempt=$attempt pre-create p2pUp=${attemptP2p.hasP2pAddress()}")
+                runCatching {
+                    val band = if (config.disableBandSelector) "2.4" else config.band
+                    attemptP2p.createGroup(config.ssid, config.password, band) { ok, msg ->
+                        createMsg = msg
+                        createOk.set(ok)
+                        Log.i(TAG, "createGroup attempt=$attempt result ok=$ok msg=$msg band=$band")
                     }
                 }
                 var waited = 0
