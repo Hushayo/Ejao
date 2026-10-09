@@ -1,6 +1,8 @@
 package com.ejao.proxy
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -57,6 +59,9 @@ class MainActivity : AppCompatActivity() {
         // Index order MUST match UPDATE_INTERVAL_VALUES.
         val UPDATE_INTERVAL_LABELS = listOf("Every 1 hour", "Every 3 hours", "Every 6 hours (default)", "Every 12 hours", "Every 24 hours")
         val UPDATE_INTERVAL_VALUES = listOf(1, 3, 6, 12, 24)
+        // WiFi guard interval unit picker. Index order MUST match GUARD_UNIT_MULTS.
+        val GUARD_UNIT_LABELS = listOf("Seconds", "Minutes", "Hours")
+        val GUARD_UNIT_MULTS = listOf(1L, 60L, 3600L)
     }
 
     private lateinit var tvStatus: TextView
@@ -85,6 +90,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tilUpdateCheckInterval: com.google.android.material.textfield.TextInputLayout
     private lateinit var etUpdateCheckInterval: AutoCompleteTextView
     private lateinit var swAutoUpdate: SwitchMaterial
+    private lateinit var tvGuardStatus: TextView
+    private lateinit var etGuardInterval: EditText
+    private lateinit var etGuardUnit: AutoCompleteTextView
 
     private val saveHandler = Handler(Looper.getMainLooper())
     private val autosaveRunnable = Runnable { autosave() }
@@ -213,6 +221,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnWiki).setOnClickListener { runCatching { openWiki() } }
         findViewById<Button>(R.id.btnBattery).setOnClickListener { runCatching { requestBatteryExemption() } }
         findViewById<Button>(R.id.btnAutostart).setOnClickListener { runCatching { openAutostartSettings() } }
+        runCatching { setupWifiGuard() }
 
         btnCheckUpdate = findViewById(R.id.btnCheckUpdate)
         tvUpdateStatus = findViewById(R.id.tvUpdateStatus)
@@ -273,6 +282,11 @@ class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         Log.i(TAG, "onStart - passwordLength=${etPass.text.length}, running=${AppState.running.value}")
+    }
+
+    override fun onResume() {
+        super.onResume()
+        runCatching { refreshGuardStatus() }
     }
 
     override fun onDestroy() {
@@ -896,6 +910,107 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "No browser found", Toast.LENGTH_LONG).show()
             }
         }
+    }
+
+    private fun refreshGuardStatus() {
+        runCatching {
+            if (::tvGuardStatus.isInitialized) tvGuardStatus.text = WifiGuard.statusLine(this)
+        }
+    }
+
+    /**
+     * AprilFool ADB WiFi guard card: copy the one-liner for the PC, or drop a
+     * request file the shell-side daemon picks up within ~30s. Read-only when
+     * the daemon was never started (status line says so).
+     */
+    private fun setupWifiGuard() {
+        tvGuardStatus = findViewById(R.id.tvGuardStatus)
+        etGuardInterval = findViewById(R.id.etGuardInterval)
+        etGuardUnit = findViewById(R.id.etGuardUnit)
+        refreshGuardStatus()
+        setupGuardIntervalPicker()
+        findViewById<Button>(R.id.btnGuardCopy).setOnClickListener {
+            runCatching {
+                val cmd = WifiGuard.adbCommand(this, chosenGuardIntervalSec())
+                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(ClipData.newPlainText("ejao-guard", cmd))
+                Toast.makeText(this, "Guard command copied - paste it on a PC with USB debugging", Toast.LENGTH_LONG).show()
+            }.onFailure { e ->
+                Log.e(TAG, "guard copy failed", e)
+            }
+        }
+        findViewById<Button>(R.id.btnGuardRequest).setOnClickListener {
+            runCatching {
+                if (WifiGuard.requestWifiOn(this)) {
+                    Toast.makeText(this, "Requested - guard picks it up within ~30s", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, "Couldn't write the request file", Toast.LENGTH_LONG).show()
+                }
+                refreshGuardStatus()
+            }.onFailure { e ->
+                Log.e(TAG, "guard request failed", e)
+            }
+        }
+        findViewById<Button>(R.id.btnGuardStop).setOnClickListener {
+            runCatching {
+                if (WifiGuard.stopGuard(this)) {
+                    Toast.makeText(this, "Stop requested - guard exits within ~30s", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, "Couldn't write the stop file", Toast.LENGTH_LONG).show()
+                }
+                refreshGuardStatus()
+            }.onFailure { e ->
+                Log.e(TAG, "guard stop failed", e)
+            }
+        }
+    }
+
+    /**
+     * Guard interval picker: number + unit, saved as seconds in prefs. Only
+     * feeds the next copied ADB command - a running daemon keeps its own
+     * interval until re-started (its cadence shows in the status line).
+     */
+    private fun setupGuardIntervalPicker() {
+        val adapter = ArrayAdapter(this, android.R.layout.simple_dropdown_item_1line, GUARD_UNIT_LABELS)
+        etGuardUnit.setAdapter(adapter)
+        val saved = WifiGuard.intervalSec(this)
+        val unitIdx = when {
+            saved % 3600L == 0L -> 2
+            saved % 60L == 0L -> 1
+            else -> 0
+        }
+        etGuardUnit.setText(GUARD_UNIT_LABELS[unitIdx], false)
+        etGuardInterval.setText((saved / GUARD_UNIT_MULTS[unitIdx]).toString())
+        etGuardUnit.setOnItemClickListener { _, _, position, _ ->
+            runCatching {
+                etGuardUnit.setText(GUARD_UNIT_LABELS[position], false)
+                saveGuardInterval()
+            }
+        }
+        etGuardInterval.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                runCatching { saveGuardInterval() }
+            }
+            override fun afterTextChanged(s: Editable?) {}
+        })
+    }
+
+    private fun chosenGuardIntervalSec(): Long {
+        return try {
+            val n = etGuardInterval.text.toString().toLongOrNull()
+                ?: return WifiGuard.intervalSec(this)
+            val mult = GUARD_UNIT_MULTS.getOrElse(GUARD_UNIT_LABELS.indexOf(etGuardUnit.text.toString())) { 60L }
+            (n * mult).coerceAtLeast(WifiGuard.MIN_INTERVAL_SEC)
+        } catch (_: Exception) {
+            WifiGuard.intervalSec(this)
+        }
+    }
+
+    private fun saveGuardInterval() {
+        // chosenGuardIntervalSec falls back to the saved value on bad input,
+        // so a half-typed number can never corrupt the pref.
+        WifiGuard.setIntervalSec(this, chosenGuardIntervalSec())
     }
 
     private fun openAutostartSettings() {
