@@ -241,21 +241,48 @@ class ProxyService : Service() {
             // stopSelf() used to kill the service + cancel the watchdog, so
             // one slow callback meant manual restart at the phone.
             updateStatus("Creating WiFi Direct group...")
-            // Fresh pipeline (process restart, update, crash): the dead
-            // process may still hold a P2P group that requestGroupInfo can
-            // no longer see, so the conditional remove inside the loop
-            // skips and every create comes back ERROR until a manual
-            // STOP/START clears it. Unconditional remove + settle first.
-            Log.i(TAG, "pipeline start: clearing any stale P2P group before first create")
-            runCatching { p2p.removeGroup { } }
-            delay(4000)
-            if (!started.get() || pipelineGen.get() != myGen) return
             var groupSsid = ""
             var groupPass = ""
             var groupReady = false
             var lastCreateMsg = ""
             val maxGroupAttempts = 5
             var attempt = 0
+            // Config-only restart (ports, mode, panel tweaks, file-watch
+            // bounce): if a group is already up with these exact credentials,
+            // keep it - tearing down WiFi on every restart is what kicks
+            // clients off. Only (re)create when missing or creds differ.
+            runCatching {
+                val reuseGot = AtomicBoolean(false)
+                var seenSsid = ""
+                var seenPass = ""
+                p2p.requestGroupInfo { g ->
+                    reuseGot.set(true)
+                    if (g != null) {
+                        seenSsid = g.networkName ?: ""
+                        seenPass = g.passphrase ?: ""
+                    }
+                }
+                var waitedMs = 0
+                while (!reuseGot.get() && waitedMs < 3000) { delay(200); waitedMs += 200 }
+                val wantSsid = runCatching { p2p.normalizeSsid(config.ssid) }.getOrDefault(config.ssid)
+                if (reuseGot.get() && seenSsid.isNotEmpty() && seenSsid == wantSsid && seenPass == config.password) {
+                    Log.i(TAG, "reusing live group $seenSsid (config-only restart, WiFi untouched)")
+                    groupSsid = seenSsid
+                    groupPass = seenPass
+                    groupReady = true
+                }
+            }
+            if (!groupReady) {
+                // Fresh pipeline (process restart, update, crash): the dead
+                // process may still hold a P2P group that requestGroupInfo can
+                // no longer see, so the conditional remove inside the loop
+                // skips and every create comes back ERROR until a manual
+                // STOP/START clears it. Unconditional remove + settle first.
+                Log.i(TAG, "pipeline start: clearing any stale P2P group before first create")
+                runCatching { p2p.removeGroup { } }
+                delay(4000)
+                if (!started.get() || pipelineGen.get() != myGen) return
+            }
             while (!groupReady && attempt < maxGroupAttempts) {
                 if (!started.get() || pipelineGen.get() != myGen) return
                 attempt++
@@ -701,13 +728,26 @@ class ProxyService : Service() {
         try {
             val watched = ConfigManager.externalConfigFile(this)
             if (!watched.exists()) runCatching { ConfigManager.mirrorToExternal(this) }
+            // NOTE: never mirrorToExternal() here - that writes the very file
+            // being watched and self-triggers an endless restart loop (each
+            // restart re-mirrors -> CLOSE_WRITE -> restart ...), which kept
+            // kicking WiFi off every few minutes all night. load() reads the
+            // internal file first, so no mirror is needed to pick up changes.
+            var lastHandledSig = ""
+            fun sigOf(f: java.io.File): String =
+                runCatching { "${f.lastModified()}:${f.length()}" }.getOrDefault("")
+            lastHandledSig = sigOf(watched)
             fileObserver = object : FileObserver(watched.absolutePath) {
                 override fun onEvent(event: Int, path: String?) {
                     if (event and FileObserver.CLOSE_WRITE != 0 && started.get()) {
                         restartJob?.cancel()
                         restartJob = scope.launch {
                             delay(1200)
-                            runCatching { ConfigManager.mirrorToExternal(this@ProxyService) }
+                            val sig = sigOf(watched)
+                            // Unchanged since last handled event: our own echo
+                            // or a duplicate notification - ignore, don't bounce WiFi.
+                            if (sig == lastHandledSig) return@launch
+                            lastHandledSig = sig
                             runCatching { restartProxy() }
                         }
                     }
