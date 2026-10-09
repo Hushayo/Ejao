@@ -30,8 +30,9 @@ data class AppConfig(
     val requireApprovalRestart: Boolean = false,
     // Never give up recreating the WiFi Direct group when Android drops it on
     // inactivity - keep hammering recreateGroup until it comes back instead of
-    // marking the AP dead after the retry cap.
-    val keepRetryingReform: Boolean = false,
+    // marking the AP dead after the retry cap. Default true: a hotspot that
+    // silently stops re-forming is worse than retry traffic.
+    val keepRetryingReform: Boolean = true,
     // If WiFi is off at startup, wait for it to come back and auto-bring the
     // proxy up on its own - instead of stopping the service and forcing the
     // user to toggle the proxy off and on in the app.
@@ -40,10 +41,10 @@ data class AppConfig(
     // panel stays responsive even when the proxy worker pool is saturated.
     // Defaults to httpPort + 1 when not explicitly set.
     val panelPort: Int = 8283,
-    // Emergency backup dashboard port. Runs BackupPanelServer, which is
-    // started right after the WiFi Direct group forms and is NEVER stopped
-    // by restartProxy() - so it stays reachable at http://<goIp>:<backup>
-    // even when the main proxy/panel dies but WiFi Direct is still up.
+    // Emergency backup dashboard port. Runs BackupPanelServer inside the
+    // independent BackupPanelService (own lifecycle, binds at service start
+    // before any WiFi Direct work) - so it stays reachable at
+    // http://<goIp>:<backup> even when the main proxy/panel dies.
     // Defaults to panelPort + 1 (8284) when not explicitly set.
     val backupPanelPort: Int = 8284,
     // Hours between background update checks; 0 = disabled. Default 6h.

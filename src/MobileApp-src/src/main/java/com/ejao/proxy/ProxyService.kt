@@ -36,6 +36,9 @@ class ProxyService : Service() {
         const val NOTIF_ID = 1
         const val ACTION_START = "com.ejao.proxy.START"
         const val ACTION_STOP = "com.ejao.proxy.STOP"
+        // Restart asked from outside the pipeline (backup panel, notification
+        // action): full restartProxy() handoff, serialized by restartGuard.
+        const val ACTION_RESTART = "com.ejao.proxy.RESTART"
         private const val TAG = "EjaoService"
         private const val WATCHDOG_REQ = 7
         private const val WATCHDOG_INTERVAL_MS = 60_000L
@@ -72,8 +75,10 @@ class ProxyService : Service() {
     @Volatile private var socks4: Socks4Server? = null
     @Volatile private var http: HttpProxyServer? = null
     @Volatile private var panel: PanelServer? = null
-    private var backupPanel: BackupPanelServer? = null
-    private var backupPanelPortActual: Int = 0
+    // Mirror of BackupPanelService.backupPort (the independent backup panel
+    // owns its own socket - this is only a cache for status/notification
+    // text, synced via syncBackupPort()). Never bind/stop it from here.
+    @Volatile private var backupPanelPortActual: Int = 0
     private var proxyDownNotified = false
     private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
@@ -108,6 +113,9 @@ class ProxyService : Service() {
         } catch (e: Exception) {
             Log.e(TAG, "startForeground failed", e)
         }
+        // Backup panel FIRST, before any WiFi work: it lives in its own
+        // service and must already be bound even if the group below fails.
+        runCatching { BackupPanelService.start(this) }
         runCatching { acquireLocks() }
         runCatching { startFileWatcher() }
         runCatching { PanelApproval.onRestart = { restartProxy() } }
@@ -124,6 +132,22 @@ class ProxyService : Service() {
                 stopSelf()
                 return START_NOT_STICKY
             }
+            if (intent?.action == ACTION_RESTART) {
+                runCatching { ProxyState.setShouldRun(this, true) }
+                runCatching { BackupPanelService.start(this) }
+                runCatching { syncBackupPort() }
+                if (started.get()) {
+                    restartProxy()
+                    return START_STICKY
+                }
+                // Proxy fully stopped: fall through to the normal START flow
+                // below for a fresh boot (restartProxy() would no-op when
+                // the service was never started).
+            }
+            // Keep the independent backup panel reconciled on every start
+            // (picks up backup_panel_port edits without a reinstall).
+            runCatching { BackupPanelService.start(this) }
+            runCatching { syncBackupPort() }
             if (started.compareAndSet(false, true)) {
                 startedAt = System.currentTimeMillis()
                 AppState.serviceStartedAt = startedAt
@@ -308,13 +332,30 @@ class ProxyService : Service() {
                 groupReady = true
             }
             if (!groupReady) {
-                // Stay alive with the backup panel (still bound to 0.0.0.0)
-                // so the user can hit Restart again from the phone or backup
-                // panel. Never stopSelf() here - that used to cancel the
+                // The AP never came up, so NO panel (main or backup) is
+                // reachable over WiFi right now - the old text ("backup panel
+                // still up, tap Restart again") sent users to a hotspot URL
+                // their PC could never load. The backup panel IS still bound
+                // on the phone (independent BackupPanelService, all local
+                // interfaces) and comes back over WiFi the moment the group
+                // reforms. Never stopSelf() here - that used to cancel the
                 // watchdog + shouldRun, requiring a manual trip to the host.
                 Log.e(TAG, "proxy_error: group failed after $maxGroupAttempts attempts: $lastCreateMsg")
-                updateStatus("ERROR: $lastCreateMsg (retries exhausted) - backup panel still up, tap Restart again")
+                updateStatus("ERROR: $lastCreateMsg (retries exhausted) - AP is DOWN, so no panel is reachable over WiFi. Auto-retrying shortly - or tap Restart in the app on this phone.")
                 runCatching { scheduleWatchdog(this) }
+                runCatching { BackupPanelService.start(this) }
+                runCatching { syncBackupPort() }
+                // Auto-retry after a cooldown: the P2P driver often recovers
+                // from BUSY/ERROR on its own. Previously this parked forever
+                // until a manual tap. A manual Restart bumps pipelineGen and
+                // supersedes this generation immediately.
+                scope.launch {
+                    delay(45_000)
+                    if (started.get() && pipelineGen.get() == myGen) {
+                        Log.i(TAG, "auto-retrying group creation after cooldown")
+                        restartProxy()
+                    }
+                }
                 // Park the pipeline without killing the service; a new
                 // restart (panel button, file change) bumps pipelineGen and
                 // supersedes this generation.
@@ -327,7 +368,11 @@ class ProxyService : Service() {
             val actualPass = groupPass.ifEmpty { config.password }
             Log.i(TAG, "group formed ssid=$actualSsid goIp=$goIp")
 
-            startBackupPanel(goIp, config)
+            // Backup panel is owned by BackupPanelService (independent of
+            // this pipeline): just make sure it is up and mirror its port.
+            // It was already started in onCreate, so normally this is a no-op.
+            runCatching { BackupPanelService.start(this) }
+            runCatching { syncBackupPort() }
             proxyDownNotified = false
 
             startDataPlane(config, goIp, actualSsid, actualPass)
@@ -346,7 +391,7 @@ class ProxyService : Service() {
                 updateStatus("Panel: http://$goIp:${config.panelPort}/")
             }
             if (backupPanelPortActual > 0) {
-                updateStatus("Backup panel (survives proxy crash): http://$goIp:$backupPanelPortActual/")
+                updateStatus("Backup panel (independent service): http://$goIp:$backupPanelPortActual/")
                 AppState.apInfo.value = AppState.apInfo.value.copy(backupPanelPort = backupPanelPortActual)
                 val hybridNotif = config.isHybrid()
                 val httpModeNotif = config.effectiveMode() == "http"
@@ -408,10 +453,13 @@ class ProxyService : Service() {
                 }
                 // Heavy work stays on ~5s cadence; throughput above is realtime 1s.
                 if (tick % 5 != 0) continue
-                if ((backupPanel == null || backupPanel?.isRunning() != true) && started.get()) {
-                    val lastGoIp = AppState.apInfo.value.goIp.ifEmpty { goIp }
-                    val fresh = runCatching { ConfigManager.load(this) }.getOrDefault(config)
-                    startBackupPanel(lastGoIp, fresh)
+                // Backup panel health: owned by BackupPanelService. If it ever
+                // reports unbound, ask it to rebind and re-mirror the port.
+                if (BackupPanelService.backupPort > 0) {
+                    runCatching { syncBackupPort() }
+                } else if (started.get()) {
+                    runCatching { BackupPanelService.start(this) }
+                    runCatching { syncBackupPort() }
                 }
                 // Idle pauses the data plane on purpose: closed proxy ports
                 // are expected, so skip the PROXY DOWN detector entirely.
@@ -583,7 +631,7 @@ class ProxyService : Service() {
             // stranded the user. Stay alive on the backup panel instead; a
             // panel restart (new pipelineGen) supersedes this generation.
             Log.e(TAG, "pipeline error (staying alive)", e)
-            updateStatus("ERROR: ${e.message} - backup panel still up, tap Restart to recover")
+            updateStatus("ERROR: ${e.message} - tap Restart in the app to recover")
             runCatching { scheduleWatchdog(this) }
             while (started.get() && pipelineGen.get() == myGen) delay(5000)
             return
@@ -803,40 +851,18 @@ class ProxyService : Service() {
         }
     }
 
-    private fun startBackupPanel(goIp: String, config: AppConfig) {
-        try {
-            if (backupPanel?.isRunning() == true && backupPanelPortActual > 0) {
-                AppState.apInfo.value = AppState.apInfo.value.copy(backupPanelPort = backupPanelPortActual)
-                return
+    /**
+     * Mirrors BackupPanelService.backupPort into the local cache + AppState.
+     * The backup socket itself is owned by BackupPanelService - this never
+     * binds or stops anything, so proxy restarts can't strand it.
+     */
+    private fun syncBackupPort() {
+        val b = BackupPanelService.backupPort
+        if (b > 0) {
+            backupPanelPortActual = b
+            runCatching {
+                AppState.apInfo.value = AppState.apInfo.value.copy(backupPanelPort = b)
             }
-            runCatching { backupPanel?.stop() }
-            backupPanel = null
-            val wanted = config.backupPanelPort.coerceIn(1, 65535)
-            val server = BackupPanelServer(
-                requestedPort = wanted,
-                context = this,
-                onRestartRequest = { handlePanelRestart() },
-                onLog = { updateStatus("  $it") }
-            )
-            val bound = server.start()
-            if (bound > 0) {
-                backupPanel = server
-                backupPanelPortActual = bound
-                AppState.apInfo.value = AppState.apInfo.value.copy(
-                    goIp = goIp.ifEmpty { AppState.apInfo.value.goIp },
-                    backupPanelPort = bound
-                )
-                Log.i(TAG, "Backup panel started on $goIp:$bound (survives proxy crash)")
-                updateStatus("Backup panel: http://$goIp:$bound/ (use if proxy goes down)")
-            } else {
-                backupPanelPortActual = 0
-                runCatching { AppState.apInfo.value = AppState.apInfo.value.copy(backupPanelPort = 0) }
-                Log.w(TAG, "Backup panel failed to bind (wanted $wanted)")
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "startBackupPanel failed: ${e.message}")
-            backupPanelPortActual = 0
-            runCatching { AppState.apInfo.value = AppState.apInfo.value.copy(backupPanelPort = 0) }
         }
     }
 
@@ -916,13 +942,33 @@ class ProxyService : Service() {
         try {
             if (!started.get()) return
             try {
-                p2p.removeExistingGroup {
-                    runCatching {
-                        val band = if (config.disableBandSelector) "2.4" else config.band
-                        p2p.createGroup(config.ssid, config.password, band) { ok, msg ->
-                            Log.i(TAG, "recreateGroup createGroup ok=$ok msg=$msg band=$band")
+                val band = if (config.disableBandSelector) "2.4" else config.band
+                // The P2P stack is usually still tearing down the dead group
+                // when we get here, so the first createGroup often comes back
+                // BUSY. Clear stale state and back off between attempts
+                // instead of hammering a busy stack.
+                val backoffsMs = longArrayOf(0L, 5000L, 10000L, 20000L)
+                for (attempt in backoffsMs.indices) {
+                    if (!started.get()) return
+                    if (attempt > 0) delay(backoffsMs[attempt])
+                    if (!started.get()) return
+                    val accepted = AtomicBoolean(false)
+                    var reply = ""
+                    p2p.removeExistingGroup {
+                        runCatching {
+                            p2p.createGroup(config.ssid, config.password, band) { ok, msg ->
+                                accepted.set(ok)
+                                reply = msg
+                                Log.i(TAG, "recreateGroup createGroup ok=$ok msg=$msg band=$band attempt=${attempt + 1}")
+                            }
                         }
                     }
+                    delay(2000) // let the async callbacks land
+                    if (accepted.get()) break
+                    // Hard error (not BUSY): retrying won't help, bail to the
+                    // formation poll below which reports the outcome.
+                    if (!reply.contains("busy", ignoreCase = true)) break
+                    Log.w(TAG, "recreateGroup BUSY on attempt ${attempt + 1} - backing off")
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "recreateGroup remove/create failed: ${e.message}")
@@ -1008,9 +1054,10 @@ class ProxyService : Service() {
                     runCatching { socks4?.stop() }
                     runCatching { http?.stop() }
                     runCatching { panel?.stop() }
-                    // NOTE: backupPanel is deliberately NOT stopped - it stays
-                    // reachable at :8284 throughout the restart so a failed
-                    // restart never strands the user with no way back.
+                    // NOTE: the backup panel is NOT touched here - it is owned
+                    // by the independent BackupPanelService and stays bound
+                    // throughout the restart, so a failed restart never
+                    // strands the user with no way back.
                     socks = null
                     socks4 = null
                     http = null
@@ -1036,7 +1083,7 @@ class ProxyService : Service() {
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 Log.e(TAG, "restart failed", e)
-                runCatching { updateStatus("ERROR: restart failed (${e.message}) - backup panel still up, tap Restart again") }
+                runCatching { updateStatus("ERROR: restart failed (${e.message}) - tap Restart in the app again") }
                 runCatching { scheduleWatchdog(this@ProxyService) }
             } finally {
                 restartGuard.set(false)
@@ -1045,11 +1092,16 @@ class ProxyService : Service() {
     }
 
     override fun onDestroy() {
+        // Explicit user STOP clears shouldRun BEFORE stopSelf()/stopService(),
+        // so a false here means the user asked to stop everything. A true
+        // here means the system destroyed us (kill/restart) while we should
+        // still run - the independent backup panel must survive that.
+        val explicitStop = !runCatching { ProxyState.shouldRun(this) }.getOrDefault(true)
         started.set(false)
         pipelineGen.incrementAndGet()
         runCatching { ProxyState.setShouldRun(this, false) }
         runCatching { cancelWatchdog(this) }
-        Log.i(TAG, "proxy_stopped")
+        Log.i(TAG, "proxy_stopped explicit=$explicitStop")
         restartJob?.cancel()
         pipelineJob?.cancel()
         keepAliveJob?.cancel()
@@ -1059,14 +1111,11 @@ class ProxyService : Service() {
             runCatching { socks4?.stop() }
             runCatching { http?.stop() }
             runCatching { panel?.stop() }
-            runCatching { backupPanel?.stop() }
             socks = null
             socks4 = null
             http = null
             panel = null
-            backupPanel = null
         }
-        backupPanelPortActual = 0
         proxyDownNotified = false
         AppState.isIdle.value = false
         AppState.isReforming.value = false
@@ -1076,8 +1125,19 @@ class ProxyService : Service() {
         scope.cancel()
         AppState.running.value = false
         AppState.httpMode.value = false
-        AppState.status.value = "Stopped"
-        AppState.apInfo.value = ApInfo()
+        if (explicitStop) {
+            // Full stop: take the backup panel down too and wipe its display.
+            runCatching { BackupPanelService.stop(this) }
+            backupPanelPortActual = 0
+            AppState.status.value = "Stopped"
+            AppState.apInfo.value = ApInfo()
+        } else {
+            // System-side destroy with shouldRun intact: leave the backup
+            // service (and its port display) alone; the watchdog brings the
+            // proxy pipeline back.
+            runCatching { syncBackupPort() }
+            AppState.status.value = "Restarting..."
+        }
         super.onDestroy()
     }
 
