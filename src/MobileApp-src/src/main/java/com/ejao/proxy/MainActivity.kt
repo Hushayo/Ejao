@@ -207,6 +207,10 @@ class MainActivity : AppCompatActivity() {
                 if (AppState.running.value) {
                     ProxyState.setShouldRun(this, false)
                     stopService(Intent(this, ProxyService::class.java))
+                    // Backup is its own service: stop it explicitly too (it
+                    // ignores ProxyService's death when shouldRun is true, so
+                    // without this it would linger after a user STOP).
+                    runCatching { BackupPanelService.stop(this) }
                 } else {
                     startSelectedProxy()
                 }
@@ -712,12 +716,12 @@ class MainActivity : AppCompatActivity() {
                 "HTTP:      ${info.goIp}:$httpPort"
             )
             if (info.panelPort > 0) infoLines.add("Panel:     http://${info.goIp}:${info.panelPort}/")
-            if (info.backupPanelPort > 0) infoLines.add("Backup:    http://${info.goIp}:${info.backupPanelPort}/ (use if proxy down)")
+            if (info.backupPanelPort > 0) infoLines.add("Backup:    http://${info.goIp}:${info.backupPanelPort}/ (own service, use if proxy down)")
             infoLines.add("Clients:   ${info.clients}")
             tvInfo.text = infoLines.joinToString("\n")
             tvPanelUrl.text = buildString {
                 if (info.panelPort > 0) append("Control panel runs on its own port:\nhttp://${info.goIp}:${info.panelPort}/\n")
-                if (info.backupPanelPort > 0) append("Backup panel (survives proxy crash):\nhttp://${info.goIp}:${info.backupPanelPort}/")
+                if (info.backupPanelPort > 0) append("Backup panel (own service, stays up if proxy dies):\nhttp://${info.goIp}:${info.backupPanelPort}/")
             }.trim().ifEmpty { "" }
         }
     }
@@ -796,6 +800,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun startProxy() {
         try {
+            // Backup panel first: independent service, binds before WiFi work.
+            runCatching { BackupPanelService.start(this) }
             val intent = Intent(this, ProxyService::class.java).setAction(ProxyService.ACTION_START)
             ContextCompat.startForegroundService(this, intent)
             AppState.running.value = true

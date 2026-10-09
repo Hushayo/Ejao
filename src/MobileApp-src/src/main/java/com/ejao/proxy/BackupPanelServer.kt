@@ -29,13 +29,18 @@ import java.util.concurrent.atomic.AtomicBoolean
  * This server is deliberately tiny and independent:
  * - own ServerSocket + own thread pool + own CoroutineScope, never shares
  *   the proxy/panel executors, so a saturated or dead proxy cannot starve it.
- * - started right after the WiFi Direct group forms, BEFORE the main
- *   proxies, so it is already reachable even if the main bind fails.
- * - NOT stopped by restartProxy() - only stopped on service onDestroy().
- *   It survives proxy crashes and restarts, keeping a restart button alive.
+ * - owned by BackupPanelService (its own foreground Service), NOT by
+ *   ProxyService: it binds at service start, before any WiFi Direct work,
+ *   and survives proxy restarts/crashes. Restartable (fresh executor per
+ *   start) so the service can rebind after a config change.
  * - never touches the cellular egress network, only localhost probes +
  *   AppState/Config reads wrapped in try/catch, so it cannot crash because
  *   of a bad config or dead radio.
+ *
+ * Reachability honesty: this socket binds 0.0.0.0, but WiFi Direct clients
+ * can only load it while the group (AP) is actually up. When the AP is down
+ * the page says so and points at the phone app instead of a dead hotspot
+ * URL - a backup link you can't route to is worse than no link.
  *
  * Reach it at http://<goIp>:<backupPort>/ from any WiFi Direct client.
  * Default port is panelPort + 1 (8284); if occupied it walks up a few ports.
@@ -46,8 +51,11 @@ class BackupPanelServer(
     private val onRestartRequest: () -> Unit = {},
     private val onLog: (String) -> Unit = {}
 ) {
-    private val workerExecutor = Executors.newFixedThreadPool(8)
-    private val scope = CoroutineScope(SupervisorJob() + workerExecutor.asCoroutineDispatcher())
+    // Recreated on every start(): the owner (BackupPanelService) rebinds
+    // after config changes, and a cancelled scope / shut-down executor
+    // cannot be reused - so stop() tears them down and start() rebuilds.
+    private var workerExecutor: java.util.concurrent.ExecutorService? = null
+    private var scope: CoroutineScope? = null
     private val running = AtomicBoolean(false)
     private var serverSocket: ServerSocket? = null
     private var tcpJob: Job? = null
@@ -56,9 +64,12 @@ class BackupPanelServer(
 
     fun isRunning(): Boolean = running.get() && serverSocket?.isBound == true
 
-    /** Binds, falling back to requestedPort+1..+5 if occupied. Returns bound port or -1. */
+    /**
+     * Binds, falling back to requestedPort+1..+5 if occupied.
+     * Returns bound port or -1. Already-running server is left alone.
+     */
     fun start(): Int {
-        running.set(true)
+        if (running.get() && serverSocket?.isBound == true) return actualPort
         var bound = -1
         var ss: ServerSocket? = null
         for (p in requestedPort..requestedPort + 5) {
@@ -81,9 +92,14 @@ class BackupPanelServer(
             onLog("Backup panel failed to bind (tried $requestedPort..${requestedPort + 5})")
             return -1
         }
+        val exec = Executors.newFixedThreadPool(8)
+        val sc = CoroutineScope(SupervisorJob() + exec.asCoroutineDispatcher())
+        workerExecutor = exec
+        scope = sc
+        running.set(true)
         serverSocket = ss
         actualPort = bound
-        tcpJob = scope.launch { runServer(ss) }
+        tcpJob = sc.launch { runServer(ss, sc) }
         onLog("Backup panel listening on port $bound")
         return bound
     }
@@ -91,12 +107,16 @@ class BackupPanelServer(
     fun stop() {
         running.set(false)
         runCatching { serverSocket?.close() }
+        serverSocket = null
         tcpJob?.cancel()
-        scope.cancel()
-        runCatching { workerExecutor.shutdownNow() }
+        tcpJob = null
+        scope?.cancel()
+        scope = null
+        runCatching { workerExecutor?.shutdownNow() }
+        workerExecutor = null
     }
 
-    private suspend fun runServer(ss: ServerSocket) {
+    private suspend fun runServer(ss: ServerSocket, sc: CoroutineScope) {
         while (running.get()) {
             val client = try {
                 ss.accept()
@@ -108,7 +128,7 @@ class BackupPanelServer(
                 runCatching { client.setReceiveBufferSize(32 * 1024) }
                 runCatching { client.setSendBufferSize(32 * 1024) }
             } catch (_: Exception) { }
-            scope.launch { handleClient(client) }
+            sc.launch { handleClient(client) }
         }
     }
 
@@ -282,7 +302,7 @@ class BackupPanelServer(
         <section class="card" style="text-align:center;padding:32px 16px">
             <div class="card-head" style="margin-bottom:8px">Backup panel &mdash; restart</div>
             <h1 style="font-size:18px;margin:0 0 10px">Restart requested</h1>
-            <p class="note">Restarting the proxy now. WiFi Direct stays up; this backup page will still be here. The main proxy + panel come back in a few seconds.</p>
+            <p class="note">Restarting the proxy now. This backup page runs in its own service and stays up; the main proxy + panel come back in a few seconds.</p>
             <a href="/" class="btn" style="display:block;text-decoration:none;text-align:center;box-sizing:border-box">Back</a>
         </section>
         </div></body></html>
@@ -297,10 +317,18 @@ class BackupPanelServer(
             "<span class=\"pill pill-ok\">PROXY UP</span>"
         else
             "<span class=\"pill pill-bad\">PROXY DOWN</span>"
-        val wifiBadge = if (s.goIp.isNotEmpty() && s.ssid.isNotEmpty())
+        val wifiUp = s.goIp.isNotEmpty() && s.ssid.isNotEmpty()
+        val wifiBadge = if (wifiUp)
             "<span class=\"pill pill-ok\">WIFI DIRECT UP</span>"
         else
             "<span class=\"pill pill-bad\">WIFI DIRECT DOWN</span>"
+        // Honest reachability note: when the AP is down, WiFi clients cannot
+        // load ANY panel over WiFi - say so and point at the phone app
+        // instead of a dead hotspot URL.
+        val reachNote = if (wifiUp)
+            "WiFi Direct is up, so you are reaching this page over the hotspot. If the main proxy or main panel is dead, use the button below to restart the proxy without touching WiFi."
+        else
+            "WiFi Direct is DOWN: the hotspot is gone, so no panel is reachable over WiFi right now. This backup service stays alive on the phone and comes back automatically once the hotspot reforms - or tap Restart in the Ejao app on the phone itself."
         return """
         <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
         <title>Ejao Backup Panel</title>
@@ -325,14 +353,14 @@ class BackupPanelServer(
                 <div class="li"><span class="li-k">HTTP</span><span class="li-v mono">${escapeHtml(s.goIp.ifEmpty { "192.168.49.1" })}:${s.httpPort}</span></div>
                 <div class="li"><span class="li-k">Main panel</span><span class="li-v mono">http://${escapeHtml(s.goIp.ifEmpty { "192.168.49.1" })}:${s.panelPort}/</span></div>
             </div>
-            <p class="note">You are seeing this page because WiFi Direct is still up. If the main proxy or main panel is dead, use the button below to restart the proxy without touching WiFi.</p>
+            <p class="note">$reachNote</p>
         </section>
 
         <form method="post" action="/restart">
             <section class="card">
                 <div class="card-head">Restart</div>
                 <button type="submit" class="btn btn-accent">Restart proxy now</button>
-                <p class="note">Restarts SOCKS5/HTTP + main panel. This backup panel stays up the whole time.</p>
+                <p class="note">Restarts SOCKS5/HTTP + main panel. This backup panel runs in its own service and stays up the whole time.</p>
             </section>
         </form>
 
@@ -341,7 +369,7 @@ class BackupPanelServer(
             <div class="log" id="v-log"><div class="log-line">${escapeHtml(s.status.ifEmpty { "starting..." })}</div></div>
         </section>
 
-        <footer class="foot">Ejao &mdash; backup panel, stays up when the proxy goes down</footer>
+        <footer class="foot">Ejao &mdash; backup panel, independent service that stays up when the proxy goes down</footer>
         </div>
         <script>
         async function ejaoRefresh(){
