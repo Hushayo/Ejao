@@ -118,7 +118,7 @@ class ProxyService : Service() {
         runCatching { BackupPanelService.start(this) }
         runCatching { acquireLocks() }
         runCatching { startFileWatcher() }
-        runCatching { PanelApproval.onRestart = { restartProxy() } }
+        runCatching { PanelApproval.onRestart = { restartProxy("panel_approval") } }
         runCatching {
             UpdateChecker.scheduleCheck(this, ConfigManager.ensureConfig(this).updateCheckIntervalHours)
         }
@@ -137,7 +137,7 @@ class ProxyService : Service() {
                 runCatching { BackupPanelService.start(this) }
                 runCatching { syncBackupPort() }
                 if (started.get()) {
-                    restartProxy()
+                    restartProxy("action_restart")
                     return START_STICKY
                 }
                 // Proxy fully stopped: fall through to the normal START flow
@@ -388,7 +388,7 @@ class ProxyService : Service() {
                     delay(45_000)
                     if (started.get() && pipelineGen.get() == myGen) {
                         Log.i(TAG, "auto-retrying group creation after cooldown")
-                        restartProxy()
+                        restartProxy("cooldown_retry")
                     }
                 }
                 // Park the pipeline without killing the service; a new
@@ -747,7 +747,7 @@ class ProxyService : Service() {
                             // or a duplicate notification - ignore, don't bounce WiFi.
                             if (sig == lastHandledSig) return@launch
                             lastHandledSig = sig
-                            runCatching { restartProxy() }
+                            runCatching { restartProxy("config_file") }
                         }
                     }
                 }
@@ -797,7 +797,7 @@ class ProxyService : Service() {
                         goIp = goIp,
                         panelPort = config.panelPort,
                         onLog = { updateStatus("  $it") },
-                        onStaleDetected = { restartProxy() }
+                        onStaleDetected = { restartProxy("stale_heal") }
                     )
                     http = server
                     server.start()
@@ -828,7 +828,7 @@ class ProxyService : Service() {
                         goIp = goIp,
                         panelPort = config.panelPort,
                         onLog = { updateStatus("  $it") },
-                        onStaleDetected = { restartProxy() }
+                        onStaleDetected = { restartProxy("stale_heal") }
                     )
                     http = server
                     server.start()
@@ -945,7 +945,7 @@ class ProxyService : Service() {
         if (cfg.requireApprovalRestart) {
             PanelApproval.submit(mapOf("action" to "restart"))
         } else {
-            restartProxy()
+            restartProxy("panel_restart")
         }
     }
 
@@ -1041,32 +1041,46 @@ class ProxyService : Service() {
             if (!started.get()) return
             try {
                 val band = if (config.disableBandSelector) "2.4" else config.band
-                // The P2P stack is usually still tearing down the dead group
-                // when we get here, so the first createGroup often comes back
-                // BUSY. Clear stale state and back off between attempts
-                // instead of hammering a busy stack.
+                // The P2P stack wedges (BUSY/ERROR on every create) and only an
+                // unconditional remove on a FRESH channel unwedges it - proven
+                // by the pipeline path recovering seconds after a remove that
+                // flips p2pUp true->false. So every retry does the full
+                // remove -> confirm gone -> create ritual, never a bare retry.
                 val backoffsMs = longArrayOf(0L, 5000L, 10000L, 20000L)
                 for (attempt in backoffsMs.indices) {
                     if (!started.get()) return
                     if (attempt > 0) delay(backoffsMs[attempt])
                     if (!started.get()) return
+                    val rp = WifiDirectManager(this@ProxyService)
                     val accepted = AtomicBoolean(false)
                     var reply = ""
-                    p2p.removeExistingGroup {
+                    Log.i(TAG, "recreateGroup attempt=${attempt + 1} clearing group first (p2pUp=${rp.hasP2pAddress()})")
+                    runCatching { rp.removeGroup { } }
+                    var goneWaited = 0
+                    while (goneWaited < 6000) {
+                        if (!started.get()) return
+                        var seen: Boolean? = null
+                        val gg = AtomicBoolean(false)
                         runCatching {
-                            p2p.createGroup(config.ssid, config.password, band) { ok, msg ->
-                                accepted.set(ok)
-                                reply = msg
-                                Log.i(TAG, "recreateGroup createGroup ok=$ok msg=$msg band=$band attempt=${attempt + 1}")
-                            }
+                            rp.requestGroupInfo { g -> gg.set(true); seen = (g != null) }
+                        }
+                        var lw = 0
+                        while (!gg.get() && lw < 1500) { delay(100); lw += 100 }
+                        if (gg.get() && seen == false) break
+                        delay(500); goneWaited += 500
+                    }
+                    Log.i(TAG, "recreateGroup attempt=${attempt + 1} pre-create p2pUp=${rp.hasP2pAddress()}")
+                    runCatching {
+                        rp.createGroup(config.ssid, config.password, band) { ok, msg ->
+                            accepted.set(ok)
+                            reply = msg
+                            Log.i(TAG, "recreateGroup createGroup ok=$ok msg=$msg band=$band attempt=${attempt + 1}")
                         }
                     }
                     delay(2000) // let the async callbacks land
                     if (accepted.get()) break
                     // Only P2P_UNSUPPORTED is permanent (device has no WiFi
-                    // Direct). BUSY and generic ERROR are both transient -
-                    // ERROR clears once the old group teardown finishes, so
-                    // back off and retry those too instead of giving up.
+                    // Direct). BUSY and generic ERROR are both transient.
                     if (reply.contains("no WiFi Direct support", ignoreCase = true)) break
                     Log.w(TAG, "recreateGroup rejected ($reply) on attempt ${attempt + 1} - backing off")
                 }
@@ -1126,7 +1140,7 @@ class ProxyService : Service() {
         }
     }
 
-    private fun restartProxy() {
+    private fun restartProxy(reason: String = "config_changed") {
         if (!started.get()) return
         // Drop overlapping restarts: panel double-tap / file-watcher /
         // stale-heal racing removeGroup+createGroup was the main source of
@@ -1138,7 +1152,7 @@ class ProxyService : Service() {
         scope.launch {
             val myGen = pipelineGen.incrementAndGet()
             try {
-                Log.i(TAG, "proxy_restart reason=config_changed")
+                Log.i(TAG, "proxy_restart reason=$reason")
                 updateStatus("Restarting proxy...")
                 runCatching { ProxyState.setShouldRun(this@ProxyService, true) }
                 runCatching { scheduleWatchdog(this@ProxyService) }
