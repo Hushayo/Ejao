@@ -687,10 +687,17 @@ class ProxyService : Service() {
                             // link looks dead). Ping clients + our GO IP every
                             // ~20s so the link always carries traffic - same
                             // trick as PC-side ping -t, but self-sufficient.
+                            // The subnet broadcast is always included so an
+                            // idle AP with ZERO clients still puts real
+                            // frames on the air (pinging only self/clients
+                            // does nothing when there is no flow).
                             if (tick % 20 == 0) {
+                                val broadcast = goIpNow.takeIf { it.contains(".") }
+                                    ?.substringBeforeLast(".")
+                                    ?.let { "$it.255" } ?: ""
                                 val targets = (list.mapNotNull {
                                     it.ip.takeIf { ip -> ip.contains(".") }
-                                } + goIpNow).filter { it.isNotEmpty() }
+                                } + goIpNow + broadcast).filter { it.isNotEmpty() }
                                     .distinct().take(8)
                                 if (targets.isNotEmpty()) {
                                     scope.launch {
@@ -1265,13 +1272,26 @@ class ProxyService : Service() {
                 // A restart means fresh forwarding: never come back stuck idle.
                 AppState.isIdle.value = false
                 AppState.isReforming.value = false
-                runCatching {
-                    val p2p = WifiDirectManager(this@ProxyService)
-                    p2p.removeGroup { }
+                // Group teardown is CONDITIONAL now. The old code always ran
+                // removeGroup() here, so even a data-plane-only scare
+                // (stale_heal on idle + background-noise failures) destroyed
+                // a healthy AP and risked the ERROR storm on rebuild. If the
+                // p2p interface still holds an address the group is alive:
+                // keep it - the fresh pipeline below re-verifies via
+                // requestGroupInfo and rebuilds only when the group is truly
+                // absent or the credentials changed.
+                val p2pProbe = WifiDirectManager(this@ProxyService)
+                if (!p2pProbe.hasP2pAddress()) {
+                    runCatching {
+                        p2pProbe.removeGroup { }
+                    }
+                    // Give the driver + sockets time to release after a long
+                    // session (1.5s was too short -> BUSY / bind conflicts).
+                    delay(3000)
+                } else {
+                    Log.i(TAG, "restart keeps live P2P group (no remove) reason=$reason")
+                    delay(500)
                 }
-                // Give the driver + sockets time to release after a long
-                // session (1.5s was too short -> BUSY / bind conflicts).
-                delay(3000)
                 if (pipelineGen.get() != myGen || !started.get()) return@launch
                 // New pipeline = new uptime: the clock previously ran from
                 // first service start, so panel uptime never reset on restart.
