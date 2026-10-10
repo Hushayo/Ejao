@@ -100,6 +100,13 @@ class ProxyService : Service() {
     // (leaked bound server). Kotlin synchronized() is reentrant so nested
     // startDataPlane() -> startSocks4() on the same thread is safe.
     private val dataPlaneLock = Any()
+    // Last successfully bound data-plane ports. Lets restartProxy() keep
+    // healthy listening sockets across WiFi-only restarts (zero port flap)
+    // and only rebind when the port/mode actually changed or the socket died.
+    @Volatile private var lastSocksPort: Int = 0
+    @Volatile private var lastHttpPort: Int = 0
+    @Volatile private var lastSocks4Port: Int = 0
+    @Volatile private var lastPanelPort: Int = 0
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -412,17 +419,29 @@ class ProxyService : Service() {
 
             startDataPlane(config, goIp, actualSsid, actualPass)
             if (config.panelEnabled) {
-                val ps = PanelServer(
-                    port = config.panelPort,
-                    context = this,
-                    enabled = true,
-                    onLog = { updateStatus("  $it") },
-                    onRestartRequest = { handlePanelRestart() },
-                    onIdleRequest = { idle -> setIdle(idle) }
-                )
-                panel = ps
-                ps.start()
-                Log.i(TAG, "Control panel started on $goIp:${config.panelPort}")
+                // Reuse a healthy panel across restarts (same port, still
+                // listening): tearing it down is what made panel restarts
+                // unreachable mid-heal. Only bind when missing.
+                synchronized(dataPlaneLock) {
+                    if (panel == null || lastPanelPort != config.panelPort || !isLocalPortOpen(config.panelPort)) {
+                        runCatching { panel?.stop() }
+                        panel = null
+                        val ps = PanelServer(
+                            port = config.panelPort,
+                            context = this,
+                            enabled = true,
+                            onLog = { updateStatus("  $it") },
+                            onRestartRequest = { handlePanelRestart() },
+                            onIdleRequest = { idle -> setIdle(idle) }
+                        )
+                        panel = ps
+                        ps.start()
+                        lastPanelPort = config.panelPort
+                        Log.i(TAG, "Control panel started on $goIp:${config.panelPort}")
+                    } else {
+                        Log.i(TAG, "Control panel reused on $goIp:${config.panelPort} (no rebind)")
+                    }
+                }
                 updateStatus("Panel: http://$goIp:${config.panelPort}/")
             }
             if (backupPanelPortActual > 0) {
@@ -446,9 +465,8 @@ class ProxyService : Service() {
             var groupRecreateCount = 0
             val groupRecreateMax = 21
             var groupMissStreak = 0
-            // Consecutive "group null but p2p interface still addressed"
-            // verdicts. Past this we stop trusting the interface and reform
-            // anyway, in case an address lingers on a dead interface.
+            // Count of "group null but p2p iface still up" holds (diagnostic
+            // only now - we hold indefinitely while the iface is addressed).
             var ifaceHoldStreak = 0
             var downStreak = 0
             var lastClientCount = -1
@@ -532,16 +550,22 @@ class ProxyService : Service() {
                         // while clients stay associated and the AP is fine).
                         // If a P2P interface still holds an address, the group
                         // is alive - destroying it here is what causes the
-                        // BUSY storm, so hold instead of recreating.
+                        // BUSY/ERROR storm, so hold instead of recreating.
+                        // ONE-PATCH FIX: hold INDEFINITELY while the iface is
+                        // up. The old code reformed anyway after 6 holds
+                        // (~30s), which self-destroyed a working AP and then
+                        // wedged createGroup with "WiFi Direct error" for
+                        // minutes while stale_heal also killed the proxy
+                        // ports. A stale IP on a truly dead iface is far
+                        // less harmful than destroying a live AP, so only
+                        // recreate when BOTH group is null AND no p2p iface
+                        // holds an address.
                         if (p2p.hasP2pAddress()) {
+                            Log.w(TAG, "group info null but p2p iface still up - holding, not recreating (ifaceHoldStreak=$ifaceHoldStreak)")
                             ifaceHoldStreak++
-                            if (ifaceHoldStreak <= 6) {
-                                Log.w(TAG, "group info null but p2p iface still up ($ifaceHoldStreak/6) - holding, not recreating")
-                                groupMissStreak = 0
-                                AppState.status.value = "AP signal flicker - holding connections..."
-                                return@requestGroupInfo
-                            }
-                            Log.w(TAG, "group info null for a while despite p2p addr - reforming anyway")
+                            groupMissStreak = 0
+                            AppState.status.value = "AP signal flicker - holding connections..."
+                            return@requestGroupInfo
                         }
                         ifaceHoldStreak = 0
                         AppState.isReforming.value = true
@@ -858,6 +882,10 @@ class ProxyService : Service() {
                 Log.i(TAG, "proxy_started mode=socks5 port=${config.port}")
             }
         }
+        // Remember what is bound so restartProxy() can keep healthy sockets.
+        lastSocksPort = if (socks != null) config.port else 0
+        lastHttpPort = if (http != null) config.httpPort else 0
+        lastSocks4Port = if (socks4 != null) config.socks4Port else 0
         }
     }
 
@@ -1039,6 +1067,14 @@ class ProxyService : Service() {
     private suspend fun recreateGroup(p2p: WifiDirectManager, config: AppConfig) {
         try {
             if (!started.get()) return
+            // Safety net for the monitor above: never destroy a group whose
+            // p2p interface still holds an address. removeGroup on a live AP
+            // is what wedged the stack with "WiFi Direct error" for minutes
+            // (logcat 08:50-08:52). If the iface is up, just hold and return.
+            if (p2p.hasP2pAddress()) {
+                Log.w(TAG, "recreateGroup skipped - p2p iface still up, holding live AP")
+                return
+            }
             try {
                 val band = if (config.disableBandSelector) "2.4" else config.band
                 // The P2P stack wedges (BUSY/ERROR on every create) and only an
@@ -1163,19 +1199,67 @@ class ProxyService : Service() {
                     pipelineJob?.join()
                 }
                 if (pipelineGen.get() != myGen || !started.get()) return@launch
+                // ZERO-DOWNTIME RESTART: keep healthy listening sockets bound.
+                // The old code always stopped+nulled socks/http/panel, so every
+                // WiFi flap or stale_heal closed the PC-visible ports for
+                // 30s-2min (the "proxy kept dying"). The new pipeline's
+                // startDataPlane() already reuses non-null servers, so keep
+                // whatever is still listening on the right port/mode and only
+                // rebind what changed or actually died.
                 synchronized(dataPlaneLock) {
-                    runCatching { socks?.stop() }
-                    runCatching { socks4?.stop() }
-                    runCatching { http?.stop() }
-                    runCatching { panel?.stop() }
+                    val fresh = runCatching { ConfigManager.load(this@ProxyService) }.getOrNull()
+                    val needSocks = fresh?.let { it.effectiveMode() == "socks5" || it.isHybrid() } ?: true
+                    val needHttp = fresh?.let { it.effectiveMode() == "http" || it.isHybrid() } ?: true
+                    val wantSocksPort = fresh?.port ?: lastSocksPort
+                    val wantHttpPort = fresh?.httpPort ?: lastHttpPort
+                    val wantSocks4Port = fresh?.socks4Port ?: lastSocks4Port
+                    val wantPanelPort = fresh?.panelPort ?: lastPanelPort
+                    val wantPanel = fresh?.panelEnabled ?: (panel != null)
+
+                    val keep = { port: Int -> port > 0 && isLocalPortOpen(port) }
+
+                    if (socks != null) {
+                        if (needSocks && lastSocksPort == wantSocksPort && keep(wantSocksPort)) {
+                            Log.i(TAG, "restart keeps SOCKS5 :$wantSocksPort (no rebind)")
+                        } else {
+                            runCatching { socks?.stop() }
+                            socks = null
+                            lastSocksPort = 0
+                        }
+                    }
+                    if (http != null) {
+                        if (needHttp && lastHttpPort == wantHttpPort && keep(wantHttpPort)) {
+                            // Unflag panel-only in case we restart out of idle.
+                            runCatching { http?.setIdleMode(false) }
+                            Log.i(TAG, "restart keeps HTTP :$wantHttpPort (no rebind)")
+                        } else {
+                            runCatching { http?.stop() }
+                            http = null
+                            lastHttpPort = 0
+                        }
+                    }
+                    if (socks4 != null) {
+                        if (lastSocks4Port == wantSocks4Port && keep(wantSocks4Port)) {
+                            Log.i(TAG, "restart keeps SOCKS4 :$wantSocks4Port (no rebind)")
+                        } else {
+                            runCatching { socks4?.stop() }
+                            socks4 = null
+                            lastSocks4Port = 0
+                        }
+                    }
+                    if (panel != null) {
+                        if (wantPanel && lastPanelPort == wantPanelPort && keep(wantPanelPort)) {
+                            Log.i(TAG, "restart keeps panel :$wantPanelPort (no rebind)")
+                        } else {
+                            runCatching { panel?.stop() }
+                            panel = null
+                            lastPanelPort = 0
+                        }
+                    }
                     // NOTE: the backup panel is NOT touched here - it is owned
                     // by the independent BackupPanelService and stays bound
                     // throughout the restart, so a failed restart never
                     // strands the user with no way back.
-                    socks = null
-                    socks4 = null
-                    http = null
-                    panel = null
                 }
                 proxyDownNotified = false
                 // A restart means fresh forwarding: never come back stuck idle.
