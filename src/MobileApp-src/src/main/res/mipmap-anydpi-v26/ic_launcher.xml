@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- AprilFool disguise: SIM Toolkit look. Main branch uses ic_launcher_background + ic_launcher_s. -->
-    <background android:drawable="@color/sim_toolkit_background" />
-    <foreground android:drawable="@drawable/ic_sim_toolkit_fg" />
-    <monochrome android:drawable="@drawable/ic_sim_toolkit_fg" />
+    <!-- AprilFool disguise: fake "Android Developer Verifier" system icon (shield PNG).
+         Main branch uses ic_launcher_background + ic_launcher_s. -->
+    <background android:drawable="@android:color/white" />
+    <foreground android:drawable="@drawable/ic_dev_verifier" />
+    <monochrome android:drawable="@drawable/ic_dev_verifier" />
 </adaptive-icon>

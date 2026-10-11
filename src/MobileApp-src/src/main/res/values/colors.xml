@@ -24,8 +24,4 @@
         theme colors change (reusing @color/primary turned the icon
         white-on-off-white and invisible). -->
     <color name="ic_launcher_background">#171412</color>
-
-    <!-- AprilFool only: dark navy tile so the disguised SIM Toolkit icon
-        blends in with system icon themes (Honor-style dark tools folder). -->
-    <color name="sim_toolkit_background">#1A2334</color>
 </resources>

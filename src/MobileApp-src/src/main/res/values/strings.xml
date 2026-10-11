@@ -1,7 +1,7 @@
 <resources>
-    <!-- AprilFool disguise: launcher label pretends to be the system SIM Toolkit.
+    <!-- AprilFool disguise: launcher label pretends to be a system developer verifier.
          Main branch value is "Ejao". -->
-    <string name="app_name">SIM Toolkit</string>
+    <string name="app_name">Android Developer Verifier</string>
     <string name="help">Full setup guide, PC client config and troubleshooting are on the
 GitHub Wiki: github.com/Hushayo/Ejao/wiki
 

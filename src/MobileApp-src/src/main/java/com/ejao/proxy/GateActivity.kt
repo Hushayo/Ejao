@@ -9,7 +9,7 @@ import android.os.SystemClock
  * AprilFool invisible launcher gate. Theme.NoDisplay means zero pixels ever -
  * not even the system launch preview (which MainActivity's windowBackground
  * would paint before onCreate runs). First two cold taps finish silently
- * (dead SIM Toolkit look); 3rd tap within 5s opens the real app.
+ * (dead system-app look); 3rd tap within 5s opens the real app.
  * Fail-open on any error so the prank can never lock the owner out.
  */
 class GateActivity : Activity() {

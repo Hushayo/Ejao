@@ -1,7 +1,7 @@
 # Merge Later (12 October 2026)
 
 Merge the **WiFi guard helper ONLY** into `main`. The AprilFool prank
-(SIM Toolkit disguise, triple-tap gate) stays on the `AprilFool` branch.
+(Android Developer Verifier disguise, triple-tap gate) stays on the `AprilFool` branch.
 
 ## Automatic (scheduled workflow)
 
