@@ -126,17 +126,19 @@ class WifiDirectManager(private val context: Context) {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
+                val bandConst = when (band) {
+                    "5" -> WifiP2pConfig.GROUP_OWNER_BAND_5GHZ
+                    "2.4" -> WifiP2pConfig.GROUP_OWNER_BAND_2GHZ
+                    else -> WifiP2pConfig.GROUP_OWNER_BAND_AUTO
+                }
+                // setGroupOperatingBand is public API (29+): no reflection,
+                // so no hidden-API denial on targetSdk 34+. The old reflective
+                // groupOwnerBand write is dead on modern Android - dropped.
                 val config = WifiP2pConfig.Builder()
                     .setNetworkName(normalizeSsid(ssid))
                     .setPassphrase(password)
+                    .setGroupOperatingBand(bandConst)
                     .build()
-                // Android's public WifiP2pConfig.Builder has no band method, but
-                // the WifiP2pConfig object carries a hidden `groupOwnerBand` field
-                // (0=AUTO, 1=2GHz, 2=5GHz). Set it via reflection so the Group
-                // Owner (our hotspot) comes up on the chosen band where supported.
-                // Best-effort: if the field/device doesn't honour it, the group
-                // just forms on whatever band the firmware picks - never fatal.
-                applyGroupOwnerBand(config, band)
                 manager.createGroup(channel, config, listener)
                 return
             } catch (e: Exception) {
@@ -144,26 +146,6 @@ class WifiDirectManager(private val context: Context) {
             }
         }
         manager.createGroup(channel, listener)
-    }
-
-    /**
-     * Maps our [band] string ("2.4" / "5" / "auto") onto the hidden
-     * WifiP2pConfig.groupOwnerBand field. Reflective because the constant and
-     * field are @hide in the public SDK.
-     */
-    private fun applyGroupOwnerBand(config: WifiP2pConfig, band: String) {
-        val constValue = when (band) {
-            "5" -> 2   // GROUP_OWNER_BAND_5GHZ
-            "2.4" -> 1 // GROUP_OWNER_BAND_2GHZ
-            else -> 0  // GROUP_OWNER_BAND_AUTO
-        }
-        if (constValue == 0) return
-        try {
-            val field = WifiP2pConfig::class.java.getField("groupOwnerBand")
-            field.setInt(config, constValue)
-        } catch (_: Exception) {
-            // Field absent on this Android version/device - ignore, band stays AUTO.
-        }
     }
 
     fun removeGroup(onDone: () -> Unit = {}) {
@@ -175,6 +157,20 @@ class WifiDirectManager(private val context: Context) {
 
     fun requestGroupInfo(onInfo: (WifiP2pGroup?) -> Unit) {
         manager.requestGroupInfo(channel, onInfo)
+    }
+
+    /** True if any P2P interface currently holds an IPv4 - used to tell a
+     * transiently-null requestGroupInfo (group alive, must not destroy) from
+     * a genuinely torn-down group. */
+    fun hasP2pAddress(): Boolean {
+        for (name in listOf("p2p0", "p2p-wlan0-0", "p2p-wlan0-1", "p2p-wlan0-2")) {
+            try {
+                val nif = NetworkInterface.getByName(name) ?: continue
+                if (nif.inetAddresses.asSequence().any { it.address.size == 4 }) return true
+            } catch (_: Exception) {
+            }
+        }
+        return false
     }
 
     fun getGroupOwnerIp(): String {

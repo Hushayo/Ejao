@@ -11,6 +11,8 @@ class BootReceiver : BroadcastReceiver() {
         val action = intent?.action ?: return
         if (action != Intent.ACTION_BOOT_COMPLETED && action != Intent.ACTION_MY_PACKAGE_REPLACED) return
         if (!ProxyState.shouldRun(context)) return
+        // Backup first (independent service), then the proxy pipeline.
+        runCatching { BackupPanelService.start(context) }
         val start = Intent(context, ProxyService::class.java).setAction(ProxyService.ACTION_START)
         try {
             ContextCompat.startForegroundService(context, start)

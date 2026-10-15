@@ -36,6 +36,9 @@ class ProxyService : Service() {
         const val NOTIF_ID = 1
         const val ACTION_START = "com.ejao.proxy.START"
         const val ACTION_STOP = "com.ejao.proxy.STOP"
+        // Restart asked from outside the pipeline (backup panel, notification
+        // action): full restartProxy() handoff, serialized by restartGuard.
+        const val ACTION_RESTART = "com.ejao.proxy.RESTART"
         private const val TAG = "EjaoService"
         private const val WATCHDOG_REQ = 7
         private const val WATCHDOG_INTERVAL_MS = 60_000L
@@ -72,8 +75,10 @@ class ProxyService : Service() {
     @Volatile private var socks4: Socks4Server? = null
     @Volatile private var http: HttpProxyServer? = null
     @Volatile private var panel: PanelServer? = null
-    private var backupPanel: BackupPanelServer? = null
-    private var backupPanelPortActual: Int = 0
+    // Mirror of BackupPanelService.backupPort (the independent backup panel
+    // owns its own socket - this is only a cache for status/notification
+    // text, synced via syncBackupPort()). Never bind/stop it from here.
+    @Volatile private var backupPanelPortActual: Int = 0
     private var proxyDownNotified = false
     private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
@@ -95,6 +100,13 @@ class ProxyService : Service() {
     // (leaked bound server). Kotlin synchronized() is reentrant so nested
     // startDataPlane() -> startSocks4() on the same thread is safe.
     private val dataPlaneLock = Any()
+    // Last successfully bound data-plane ports. Lets restartProxy() keep
+    // healthy listening sockets across WiFi-only restarts (zero port flap)
+    // and only rebind when the port/mode actually changed or the socket died.
+    @Volatile private var lastSocksPort: Int = 0
+    @Volatile private var lastHttpPort: Int = 0
+    @Volatile private var lastSocks4Port: Int = 0
+    @Volatile private var lastPanelPort: Int = 0
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -108,9 +120,12 @@ class ProxyService : Service() {
         } catch (e: Exception) {
             Log.e(TAG, "startForeground failed", e)
         }
+        // Backup panel FIRST, before any WiFi work: it lives in its own
+        // service and must already be bound even if the group below fails.
+        runCatching { BackupPanelService.start(this) }
         runCatching { acquireLocks() }
         runCatching { startFileWatcher() }
-        runCatching { PanelApproval.onRestart = { restartProxy() } }
+        runCatching { PanelApproval.onRestart = { restartProxy("panel_approval") } }
         runCatching {
             UpdateChecker.scheduleCheck(this, ConfigManager.ensureConfig(this).updateCheckIntervalHours)
         }
@@ -124,6 +139,22 @@ class ProxyService : Service() {
                 stopSelf()
                 return START_NOT_STICKY
             }
+            if (intent?.action == ACTION_RESTART) {
+                runCatching { ProxyState.setShouldRun(this, true) }
+                runCatching { BackupPanelService.start(this) }
+                runCatching { syncBackupPort() }
+                if (started.get()) {
+                    restartProxy("action_restart")
+                    return START_STICKY
+                }
+                // Proxy fully stopped: fall through to the normal START flow
+                // below for a fresh boot (restartProxy() would no-op when
+                // the service was never started).
+            }
+            // Keep the independent backup panel reconciled on every start
+            // (picks up backup_panel_port edits without a reinstall).
+            runCatching { BackupPanelService.start(this) }
+            runCatching { syncBackupPort() }
             if (started.compareAndSet(false, true)) {
                 startedAt = System.currentTimeMillis()
                 AppState.serviceStartedAt = startedAt
@@ -223,42 +254,77 @@ class ProxyService : Service() {
             var lastCreateMsg = ""
             val maxGroupAttempts = 5
             var attempt = 0
+            // Config-only restart (ports, mode, panel tweaks, file-watch
+            // bounce): if a group is already up with these exact credentials,
+            // keep it - tearing down WiFi on every restart is what kicks
+            // clients off. Only (re)create when missing or creds differ.
+            runCatching {
+                val reuseGot = AtomicBoolean(false)
+                var seenSsid = ""
+                var seenPass = ""
+                p2p.requestGroupInfo { g ->
+                    reuseGot.set(true)
+                    if (g != null) {
+                        seenSsid = g.networkName ?: ""
+                        seenPass = g.passphrase ?: ""
+                    }
+                }
+                var waitedMs = 0
+                while (!reuseGot.get() && waitedMs < 3000) { delay(200); waitedMs += 200 }
+                val wantSsid = runCatching { p2p.normalizeSsid(config.ssid) }.getOrDefault(config.ssid)
+                if (reuseGot.get() && seenSsid.isNotEmpty() && seenSsid == wantSsid && seenPass == config.password) {
+                    Log.i(TAG, "reusing live group $seenSsid (config-only restart, WiFi untouched)")
+                    groupSsid = seenSsid
+                    groupPass = seenPass
+                    groupReady = true
+                }
+            }
+            if (!groupReady) {
+                // Fresh pipeline (process restart, update, crash): the dead
+                // process may still hold a P2P group that requestGroupInfo can
+                // no longer see, so the conditional remove inside the loop
+                // skips and every create comes back ERROR until a manual
+                // STOP/START clears it. Unconditional remove + settle first.
+                Log.i(TAG, "pipeline start: clearing any stale P2P group before first create")
+                runCatching { p2p.removeGroup { } }
+                delay(4000)
+                if (!started.get() || pipelineGen.get() != myGen) return
+            }
             while (!groupReady && attempt < maxGroupAttempts) {
                 if (!started.get() || pipelineGen.get() != myGen) return
                 attempt++
-                // Fresh manager per attempt: the old channel can go stale
-                // after hours in Doze; a new initialize() recovers it.
-                val attemptP2p = if (attempt == 1) p2p else WifiDirectManager(this)
+                // Self-contained attempt on a FRESH channel, mirroring exactly
+                // what manual STOP (onDestroy) + START does - the only
+                // sequence proven to unwedge this stack: unconditional
+                // remove, confirm gone, then create. Reusing old channels or
+                // conditional (group-info-gated) removes is what ERROR-storms
+                // for 45s+ while a manual tap works instantly.
+                val attemptP2p = WifiDirectManager(this)
                 val createOk = AtomicBoolean(false)
                 var createMsg = ""
-                val removeDone = AtomicBoolean(false)
-                runCatching {
-                    attemptP2p.removeExistingGroup {
-                        removeDone.set(true)
-                        val band = if (config.disableBandSelector) "2.4" else config.band
-                        attemptP2p.createGroup(config.ssid, config.password, band) { ok, msg ->
-                            createMsg = msg
-                            createOk.set(ok)
-                            Log.i(TAG, "createGroup attempt=$attempt result ok=$ok msg=$msg band=$band")
-                        }
-                    }
-                }
-                // If removeExistingGroup's callback never arrives (dead
-                // channel), don't hang forever: fall through and try create
-                // directly after a timeout.
-                var removeWaited = 0
-                while (!removeDone.get() && !createOk.get() && removeWaited < 5000) {
-                    delay(200); removeWaited += 200
-                }
-                if (!removeDone.get() && !createOk.get()) {
-                    Log.w(TAG, "removeExistingGroup callback timed out (attempt $attempt) - trying createGroup directly")
+                Log.i(TAG, "createGroup attempt=$attempt clearing group first (p2pUp=${attemptP2p.hasP2pAddress()})")
+                runCatching { attemptP2p.removeGroup { } }
+                // Wait for the old group to actually disappear (up to 8s).
+                var goneWaited = 0
+                while (goneWaited < 8000) {
+                    if (!started.get() || pipelineGen.get() != myGen) return
+                    var seen: Boolean? = null
+                    val gg = AtomicBoolean(false)
                     runCatching {
-                        val band = if (config.disableBandSelector) "2.4" else config.band
-                        attemptP2p.createGroup(config.ssid, config.password, band) { ok, msg ->
-                            createMsg = msg
-                            createOk.set(ok)
-                            Log.i(TAG, "createGroup direct attempt=$attempt ok=$ok msg=$msg")
-                        }
+                        attemptP2p.requestGroupInfo { g -> gg.set(true); seen = (g != null) }
+                    }
+                    var lw = 0
+                    while (!gg.get() && lw < 1500) { delay(100); lw += 100 }
+                    if (gg.get() && seen == false) break
+                    delay(500); goneWaited += 500
+                }
+                Log.i(TAG, "createGroup attempt=$attempt pre-create p2pUp=${attemptP2p.hasP2pAddress()}")
+                runCatching {
+                    val band = if (config.disableBandSelector) "2.4" else config.band
+                    attemptP2p.createGroup(config.ssid, config.password, band) { ok, msg ->
+                        createMsg = msg
+                        createOk.set(ok)
+                        Log.i(TAG, "createGroup attempt=$attempt result ok=$ok msg=$msg band=$band")
                     }
                 }
                 var waited = 0
@@ -308,13 +374,30 @@ class ProxyService : Service() {
                 groupReady = true
             }
             if (!groupReady) {
-                // Stay alive with the backup panel (still bound to 0.0.0.0)
-                // so the user can hit Restart again from the phone or backup
-                // panel. Never stopSelf() here - that used to cancel the
+                // The AP never came up, so NO panel (main or backup) is
+                // reachable over WiFi right now - the old text ("backup panel
+                // still up, tap Restart again") sent users to a hotspot URL
+                // their PC could never load. The backup panel IS still bound
+                // on the phone (independent BackupPanelService, all local
+                // interfaces) and comes back over WiFi the moment the group
+                // reforms. Never stopSelf() here - that used to cancel the
                 // watchdog + shouldRun, requiring a manual trip to the host.
                 Log.e(TAG, "proxy_error: group failed after $maxGroupAttempts attempts: $lastCreateMsg")
-                updateStatus("ERROR: $lastCreateMsg (retries exhausted) - backup panel still up, tap Restart again")
+                updateStatus("ERROR: $lastCreateMsg (retries exhausted) - AP is DOWN, so no panel is reachable over WiFi. Auto-retrying shortly - or tap Restart in the app on this phone.")
                 runCatching { scheduleWatchdog(this) }
+                runCatching { BackupPanelService.start(this) }
+                runCatching { syncBackupPort() }
+                // Auto-retry after a cooldown: the P2P driver often recovers
+                // from BUSY/ERROR on its own. Previously this parked forever
+                // until a manual tap. A manual Restart bumps pipelineGen and
+                // supersedes this generation immediately.
+                scope.launch {
+                    delay(45_000)
+                    if (started.get() && pipelineGen.get() == myGen) {
+                        Log.i(TAG, "auto-retrying group creation after cooldown")
+                        restartProxy("cooldown_retry")
+                    }
+                }
                 // Park the pipeline without killing the service; a new
                 // restart (panel button, file change) bumps pipelineGen and
                 // supersedes this generation.
@@ -327,26 +410,42 @@ class ProxyService : Service() {
             val actualPass = groupPass.ifEmpty { config.password }
             Log.i(TAG, "group formed ssid=$actualSsid goIp=$goIp")
 
-            startBackupPanel(goIp, config)
+            // Backup panel is owned by BackupPanelService (independent of
+            // this pipeline): just make sure it is up and mirror its port.
+            // It was already started in onCreate, so normally this is a no-op.
+            runCatching { BackupPanelService.start(this) }
+            runCatching { syncBackupPort() }
             proxyDownNotified = false
 
             startDataPlane(config, goIp, actualSsid, actualPass)
             if (config.panelEnabled) {
-                val ps = PanelServer(
-                    port = config.panelPort,
-                    context = this,
-                    enabled = true,
-                    onLog = { updateStatus("  $it") },
-                    onRestartRequest = { handlePanelRestart() },
-                    onIdleRequest = { idle -> setIdle(idle) }
-                )
-                panel = ps
-                ps.start()
-                Log.i(TAG, "Control panel started on $goIp:${config.panelPort}")
+                // Reuse a healthy panel across restarts (same port, still
+                // listening): tearing it down is what made panel restarts
+                // unreachable mid-heal. Only bind when missing.
+                synchronized(dataPlaneLock) {
+                    if (panel == null || lastPanelPort != config.panelPort || !isLocalPortOpen(config.panelPort)) {
+                        runCatching { panel?.stop() }
+                        panel = null
+                        val ps = PanelServer(
+                            port = config.panelPort,
+                            context = this,
+                            enabled = true,
+                            onLog = { updateStatus("  $it") },
+                            onRestartRequest = { handlePanelRestart() },
+                            onIdleRequest = { idle -> setIdle(idle) }
+                        )
+                        panel = ps
+                        ps.start()
+                        lastPanelPort = config.panelPort
+                        Log.i(TAG, "Control panel started on $goIp:${config.panelPort}")
+                    } else {
+                        Log.i(TAG, "Control panel reused on $goIp:${config.panelPort} (no rebind)")
+                    }
+                }
                 updateStatus("Panel: http://$goIp:${config.panelPort}/")
             }
             if (backupPanelPortActual > 0) {
-                updateStatus("Backup panel (survives proxy crash): http://$goIp:$backupPanelPortActual/")
+                updateStatus("Backup panel (independent service): http://$goIp:$backupPanelPortActual/")
                 AppState.apInfo.value = AppState.apInfo.value.copy(backupPanelPort = backupPanelPortActual)
                 val hybridNotif = config.isHybrid()
                 val httpModeNotif = config.effectiveMode() == "http"
@@ -366,6 +465,9 @@ class ProxyService : Service() {
             var groupRecreateCount = 0
             val groupRecreateMax = 21
             var groupMissStreak = 0
+            // Count of "group null but p2p iface still up" holds (diagnostic
+            // only now - we hold indefinitely while the iface is addressed).
+            var ifaceHoldStreak = 0
             var downStreak = 0
             var lastClientCount = -1
             var lastRx = readP2pBytes()?.first ?: -1L
@@ -408,10 +510,13 @@ class ProxyService : Service() {
                 }
                 // Heavy work stays on ~5s cadence; throughput above is realtime 1s.
                 if (tick % 5 != 0) continue
-                if ((backupPanel == null || backupPanel?.isRunning() != true) && started.get()) {
-                    val lastGoIp = AppState.apInfo.value.goIp.ifEmpty { goIp }
-                    val fresh = runCatching { ConfigManager.load(this) }.getOrDefault(config)
-                    startBackupPanel(lastGoIp, fresh)
+                // Backup panel health: owned by BackupPanelService. If it ever
+                // reports unbound, ask it to rebind and re-mirror the port.
+                if (BackupPanelService.backupPort > 0) {
+                    runCatching { syncBackupPort() }
+                } else if (started.get()) {
+                    runCatching { BackupPanelService.start(this) }
+                    runCatching { syncBackupPort() }
                 }
                 // Idle pauses the data plane on purpose: closed proxy ports
                 // are expected, so skip the PROXY DOWN detector entirely.
@@ -441,6 +546,28 @@ class ProxyService : Service() {
                                 "AP signal lost - holding connections ($groupMissStreak/3)..."
                             return@requestGroupInfo
                         }
+                        // requestGroupInfo can lie transiently on Vivo (null
+                        // while clients stay associated and the AP is fine).
+                        // If a P2P interface still holds an address, the group
+                        // is alive - destroying it here is what causes the
+                        // BUSY/ERROR storm, so hold instead of recreating.
+                        // ONE-PATCH FIX: hold INDEFINITELY while the iface is
+                        // up. The old code reformed anyway after 6 holds
+                        // (~30s), which self-destroyed a working AP and then
+                        // wedged createGroup with "WiFi Direct error" for
+                        // minutes while stale_heal also killed the proxy
+                        // ports. A stale IP on a truly dead iface is far
+                        // less harmful than destroying a live AP, so only
+                        // recreate when BOTH group is null AND no p2p iface
+                        // holds an address.
+                        if (p2p.hasP2pAddress()) {
+                            Log.w(TAG, "group info null but p2p iface still up - holding, not recreating (ifaceHoldStreak=$ifaceHoldStreak)")
+                            ifaceHoldStreak++
+                            groupMissStreak = 0
+                            AppState.status.value = "AP signal flicker - holding connections..."
+                            return@requestGroupInfo
+                        }
+                        ifaceHoldStreak = 0
                         AppState.isReforming.value = true
                         AppState.status.value = "AP re-forming - draining..."
                         if (started.get() && groupRecreateGuard.compareAndSet(false, true)) {
@@ -465,6 +592,7 @@ class ProxyService : Service() {
                         AppState.status.value = "RUNNING - AP re-forming..."
                     } else {
                         groupMissStreak = 0
+                        ifaceHoldStreak = 0
                         AppState.isReforming.value = false
                         try {
                             val goIpNow = AppState.apInfo.value.goIp.ifEmpty { goIp }
@@ -553,6 +681,42 @@ class ProxyService : Service() {
                             val realCount = list.size
                             AppState.apInfo.value = AppState.apInfo.value.copy(clients = realCount)
                             AppState.lanClients.value = list
+                            // P2P keepalive: Vivo kills idle GO groups within
+                            // minutes even with clients associated (phone-side
+                            // keepalive ping goes over cellular, so the P2P
+                            // link looks dead). Ping clients + our GO IP every
+                            // ~20s so the link always carries traffic - same
+                            // trick as PC-side ping -t, but self-sufficient.
+                            // The subnet broadcast is always included so an
+                            // idle AP with ZERO clients still puts real
+                            // frames on the air (pinging only self/clients
+                            // does nothing when there is no flow).
+                            if (tick % 20 == 0) {
+                                val broadcast = goIpNow.takeIf { it.contains(".") }
+                                    ?.substringBeforeLast(".")
+                                    ?.let { "$it.255" } ?: ""
+                                val targets = (list.mapNotNull {
+                                    it.ip.takeIf { ip -> ip.contains(".") }
+                                } + goIpNow + broadcast).filter { it.isNotEmpty() }
+                                    .distinct().take(8)
+                                if (targets.isNotEmpty()) {
+                                    scope.launch {
+                                        runCatching {
+                                            kotlinx.coroutines.withContext(
+                                                kotlinx.coroutines.Dispatchers.IO
+                                            ) {
+                                                for (ip in targets) {
+                                                    runCatching {
+                                                        java.net.InetAddress.getByName(ip)
+                                                            .isReachable(1500)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Log.i(TAG, "p2p keepalive pinged ${targets.size} target(s)")
+                                    }
+                                }
+                            }
                         } catch (_: Exception) {
                         }
                         if (proxyDownNotified && backupPanelPortActual > 0) {
@@ -583,7 +747,7 @@ class ProxyService : Service() {
             // stranded the user. Stay alive on the backup panel instead; a
             // panel restart (new pipelineGen) supersedes this generation.
             Log.e(TAG, "pipeline error (staying alive)", e)
-            updateStatus("ERROR: ${e.message} - backup panel still up, tap Restart to recover")
+            updateStatus("ERROR: ${e.message} - tap Restart in the app to recover")
             runCatching { scheduleWatchdog(this) }
             while (started.get() && pipelineGen.get() == myGen) delay(5000)
             return
@@ -594,14 +758,27 @@ class ProxyService : Service() {
         try {
             val watched = ConfigManager.externalConfigFile(this)
             if (!watched.exists()) runCatching { ConfigManager.mirrorToExternal(this) }
+            // NOTE: never mirrorToExternal() here - that writes the very file
+            // being watched and self-triggers an endless restart loop (each
+            // restart re-mirrors -> CLOSE_WRITE -> restart ...), which kept
+            // kicking WiFi off every few minutes all night. load() reads the
+            // internal file first, so no mirror is needed to pick up changes.
+            var lastHandledSig = ""
+            fun sigOf(f: java.io.File): String =
+                runCatching { "${f.lastModified()}:${f.length()}" }.getOrDefault("")
+            lastHandledSig = sigOf(watched)
             fileObserver = object : FileObserver(watched.absolutePath) {
                 override fun onEvent(event: Int, path: String?) {
                     if (event and FileObserver.CLOSE_WRITE != 0 && started.get()) {
                         restartJob?.cancel()
                         restartJob = scope.launch {
                             delay(1200)
-                            runCatching { ConfigManager.mirrorToExternal(this@ProxyService) }
-                            runCatching { restartProxy() }
+                            val sig = sigOf(watched)
+                            // Unchanged since last handled event: our own echo
+                            // or a duplicate notification - ignore, don't bounce WiFi.
+                            if (sig == lastHandledSig) return@launch
+                            lastHandledSig = sig
+                            runCatching { restartProxy("config_file") }
                         }
                     }
                 }
@@ -651,7 +828,7 @@ class ProxyService : Service() {
                         goIp = goIp,
                         panelPort = config.panelPort,
                         onLog = { updateStatus("  $it") },
-                        onStaleDetected = { restartProxy() }
+                        onStaleDetected = { restartProxy("stale_heal") }
                     )
                     http = server
                     server.start()
@@ -682,7 +859,7 @@ class ProxyService : Service() {
                         goIp = goIp,
                         panelPort = config.panelPort,
                         onLog = { updateStatus("  $it") },
-                        onStaleDetected = { restartProxy() }
+                        onStaleDetected = { restartProxy("stale_heal") }
                     )
                     http = server
                     server.start()
@@ -712,6 +889,10 @@ class ProxyService : Service() {
                 Log.i(TAG, "proxy_started mode=socks5 port=${config.port}")
             }
         }
+        // Remember what is bound so restartProxy() can keep healthy sockets.
+        lastSocksPort = if (socks != null) config.port else 0
+        lastHttpPort = if (http != null) config.httpPort else 0
+        lastSocks4Port = if (socks4 != null) config.socks4Port else 0
         }
     }
 
@@ -799,44 +980,22 @@ class ProxyService : Service() {
         if (cfg.requireApprovalRestart) {
             PanelApproval.submit(mapOf("action" to "restart"))
         } else {
-            restartProxy()
+            restartProxy("panel_restart")
         }
     }
 
-    private fun startBackupPanel(goIp: String, config: AppConfig) {
-        try {
-            if (backupPanel?.isRunning() == true && backupPanelPortActual > 0) {
-                AppState.apInfo.value = AppState.apInfo.value.copy(backupPanelPort = backupPanelPortActual)
-                return
+    /**
+     * Mirrors BackupPanelService.backupPort into the local cache + AppState.
+     * The backup socket itself is owned by BackupPanelService - this never
+     * binds or stops anything, so proxy restarts can't strand it.
+     */
+    private fun syncBackupPort() {
+        val b = BackupPanelService.backupPort
+        if (b > 0) {
+            backupPanelPortActual = b
+            runCatching {
+                AppState.apInfo.value = AppState.apInfo.value.copy(backupPanelPort = b)
             }
-            runCatching { backupPanel?.stop() }
-            backupPanel = null
-            val wanted = config.backupPanelPort.coerceIn(1, 65535)
-            val server = BackupPanelServer(
-                requestedPort = wanted,
-                context = this,
-                onRestartRequest = { handlePanelRestart() },
-                onLog = { updateStatus("  $it") }
-            )
-            val bound = server.start()
-            if (bound > 0) {
-                backupPanel = server
-                backupPanelPortActual = bound
-                AppState.apInfo.value = AppState.apInfo.value.copy(
-                    goIp = goIp.ifEmpty { AppState.apInfo.value.goIp },
-                    backupPanelPort = bound
-                )
-                Log.i(TAG, "Backup panel started on $goIp:$bound (survives proxy crash)")
-                updateStatus("Backup panel: http://$goIp:$bound/ (use if proxy goes down)")
-            } else {
-                backupPanelPortActual = 0
-                runCatching { AppState.apInfo.value = AppState.apInfo.value.copy(backupPanelPort = 0) }
-                Log.w(TAG, "Backup panel failed to bind (wanted $wanted)")
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "startBackupPanel failed: ${e.message}")
-            backupPanelPortActual = 0
-            runCatching { AppState.apInfo.value = AppState.apInfo.value.copy(backupPanelPort = 0) }
         }
     }
 
@@ -915,14 +1074,58 @@ class ProxyService : Service() {
     private suspend fun recreateGroup(p2p: WifiDirectManager, config: AppConfig) {
         try {
             if (!started.get()) return
+            // Safety net for the monitor above: never destroy a group whose
+            // p2p interface still holds an address. removeGroup on a live AP
+            // is what wedged the stack with "WiFi Direct error" for minutes
+            // (logcat 08:50-08:52). If the iface is up, just hold and return.
+            if (p2p.hasP2pAddress()) {
+                Log.w(TAG, "recreateGroup skipped - p2p iface still up, holding live AP")
+                return
+            }
             try {
-                p2p.removeExistingGroup {
+                val band = if (config.disableBandSelector) "2.4" else config.band
+                // The P2P stack wedges (BUSY/ERROR on every create) and only an
+                // unconditional remove on a FRESH channel unwedges it - proven
+                // by the pipeline path recovering seconds after a remove that
+                // flips p2pUp true->false. So every retry does the full
+                // remove -> confirm gone -> create ritual, never a bare retry.
+                val backoffsMs = longArrayOf(0L, 5000L, 10000L, 20000L)
+                for (attempt in backoffsMs.indices) {
+                    if (!started.get()) return
+                    if (attempt > 0) delay(backoffsMs[attempt])
+                    if (!started.get()) return
+                    val rp = WifiDirectManager(this@ProxyService)
+                    val accepted = AtomicBoolean(false)
+                    var reply = ""
+                    Log.i(TAG, "recreateGroup attempt=${attempt + 1} clearing group first (p2pUp=${rp.hasP2pAddress()})")
+                    runCatching { rp.removeGroup { } }
+                    var goneWaited = 0
+                    while (goneWaited < 6000) {
+                        if (!started.get()) return
+                        var seen: Boolean? = null
+                        val gg = AtomicBoolean(false)
+                        runCatching {
+                            rp.requestGroupInfo { g -> gg.set(true); seen = (g != null) }
+                        }
+                        var lw = 0
+                        while (!gg.get() && lw < 1500) { delay(100); lw += 100 }
+                        if (gg.get() && seen == false) break
+                        delay(500); goneWaited += 500
+                    }
+                    Log.i(TAG, "recreateGroup attempt=${attempt + 1} pre-create p2pUp=${rp.hasP2pAddress()}")
                     runCatching {
-                        val band = if (config.disableBandSelector) "2.4" else config.band
-                        p2p.createGroup(config.ssid, config.password, band) { ok, msg ->
-                            Log.i(TAG, "recreateGroup createGroup ok=$ok msg=$msg band=$band")
+                        rp.createGroup(config.ssid, config.password, band) { ok, msg ->
+                            accepted.set(ok)
+                            reply = msg
+                            Log.i(TAG, "recreateGroup createGroup ok=$ok msg=$msg band=$band attempt=${attempt + 1}")
                         }
                     }
+                    delay(2000) // let the async callbacks land
+                    if (accepted.get()) break
+                    // Only P2P_UNSUPPORTED is permanent (device has no WiFi
+                    // Direct). BUSY and generic ERROR are both transient.
+                    if (reply.contains("no WiFi Direct support", ignoreCase = true)) break
+                    Log.w(TAG, "recreateGroup rejected ($reply) on attempt ${attempt + 1} - backing off")
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "recreateGroup remove/create failed: ${e.message}")
@@ -980,7 +1183,7 @@ class ProxyService : Service() {
         }
     }
 
-    private fun restartProxy() {
+    private fun restartProxy(reason: String = "config_changed") {
         if (!started.get()) return
         // Drop overlapping restarts: panel double-tap / file-watcher /
         // stale-heal racing removeGroup+createGroup was the main source of
@@ -992,7 +1195,7 @@ class ProxyService : Service() {
         scope.launch {
             val myGen = pipelineGen.incrementAndGet()
             try {
-                Log.i(TAG, "proxy_restart reason=config_changed")
+                Log.i(TAG, "proxy_restart reason=$reason")
                 updateStatus("Restarting proxy...")
                 runCatching { ProxyState.setShouldRun(this@ProxyService, true) }
                 runCatching { scheduleWatchdog(this@ProxyService) }
@@ -1003,30 +1206,92 @@ class ProxyService : Service() {
                     pipelineJob?.join()
                 }
                 if (pipelineGen.get() != myGen || !started.get()) return@launch
+                // ZERO-DOWNTIME RESTART: keep healthy listening sockets bound.
+                // The old code always stopped+nulled socks/http/panel, so every
+                // WiFi flap or stale_heal closed the PC-visible ports for
+                // 30s-2min (the "proxy kept dying"). The new pipeline's
+                // startDataPlane() already reuses non-null servers, so keep
+                // whatever is still listening on the right port/mode and only
+                // rebind what changed or actually died.
                 synchronized(dataPlaneLock) {
-                    runCatching { socks?.stop() }
-                    runCatching { socks4?.stop() }
-                    runCatching { http?.stop() }
-                    runCatching { panel?.stop() }
-                    // NOTE: backupPanel is deliberately NOT stopped - it stays
-                    // reachable at :8284 throughout the restart so a failed
-                    // restart never strands the user with no way back.
-                    socks = null
-                    socks4 = null
-                    http = null
-                    panel = null
+                    val fresh = runCatching { ConfigManager.load(this@ProxyService) }.getOrNull()
+                    val needSocks = fresh?.let { it.effectiveMode() == "socks5" || it.isHybrid() } ?: true
+                    val needHttp = fresh?.let { it.effectiveMode() == "http" || it.isHybrid() } ?: true
+                    val wantSocksPort = fresh?.port ?: lastSocksPort
+                    val wantHttpPort = fresh?.httpPort ?: lastHttpPort
+                    val wantSocks4Port = fresh?.socks4Port ?: lastSocks4Port
+                    val wantPanelPort = fresh?.panelPort ?: lastPanelPort
+                    val wantPanel = fresh?.panelEnabled ?: (panel != null)
+
+                    val keep = { port: Int -> port > 0 && isLocalPortOpen(port) }
+
+                    if (socks != null) {
+                        if (needSocks && lastSocksPort == wantSocksPort && keep(wantSocksPort)) {
+                            Log.i(TAG, "restart keeps SOCKS5 :$wantSocksPort (no rebind)")
+                        } else {
+                            runCatching { socks?.stop() }
+                            socks = null
+                            lastSocksPort = 0
+                        }
+                    }
+                    if (http != null) {
+                        if (needHttp && lastHttpPort == wantHttpPort && keep(wantHttpPort)) {
+                            // Unflag panel-only in case we restart out of idle.
+                            runCatching { http?.setIdleMode(false) }
+                            Log.i(TAG, "restart keeps HTTP :$wantHttpPort (no rebind)")
+                        } else {
+                            runCatching { http?.stop() }
+                            http = null
+                            lastHttpPort = 0
+                        }
+                    }
+                    if (socks4 != null) {
+                        if (lastSocks4Port == wantSocks4Port && keep(wantSocks4Port)) {
+                            Log.i(TAG, "restart keeps SOCKS4 :$wantSocks4Port (no rebind)")
+                        } else {
+                            runCatching { socks4?.stop() }
+                            socks4 = null
+                            lastSocks4Port = 0
+                        }
+                    }
+                    if (panel != null) {
+                        if (wantPanel && lastPanelPort == wantPanelPort && keep(wantPanelPort)) {
+                            Log.i(TAG, "restart keeps panel :$wantPanelPort (no rebind)")
+                        } else {
+                            runCatching { panel?.stop() }
+                            panel = null
+                            lastPanelPort = 0
+                        }
+                    }
+                    // NOTE: the backup panel is NOT touched here - it is owned
+                    // by the independent BackupPanelService and stays bound
+                    // throughout the restart, so a failed restart never
+                    // strands the user with no way back.
                 }
                 proxyDownNotified = false
                 // A restart means fresh forwarding: never come back stuck idle.
                 AppState.isIdle.value = false
                 AppState.isReforming.value = false
-                runCatching {
-                    val p2p = WifiDirectManager(this@ProxyService)
-                    p2p.removeGroup { }
+                // Group teardown is CONDITIONAL now. The old code always ran
+                // removeGroup() here, so even a data-plane-only scare
+                // (stale_heal on idle + background-noise failures) destroyed
+                // a healthy AP and risked the ERROR storm on rebuild. If the
+                // p2p interface still holds an address the group is alive:
+                // keep it - the fresh pipeline below re-verifies via
+                // requestGroupInfo and rebuilds only when the group is truly
+                // absent or the credentials changed.
+                val p2pProbe = WifiDirectManager(this@ProxyService)
+                if (!p2pProbe.hasP2pAddress()) {
+                    runCatching {
+                        p2pProbe.removeGroup { }
+                    }
+                    // Give the driver + sockets time to release after a long
+                    // session (1.5s was too short -> BUSY / bind conflicts).
+                    delay(3000)
+                } else {
+                    Log.i(TAG, "restart keeps live P2P group (no remove) reason=$reason")
+                    delay(500)
                 }
-                // Give the driver + sockets time to release after a long
-                // session (1.5s was too short -> BUSY / bind conflicts).
-                delay(3000)
                 if (pipelineGen.get() != myGen || !started.get()) return@launch
                 // New pipeline = new uptime: the clock previously ran from
                 // first service start, so panel uptime never reset on restart.
@@ -1036,7 +1301,7 @@ class ProxyService : Service() {
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 Log.e(TAG, "restart failed", e)
-                runCatching { updateStatus("ERROR: restart failed (${e.message}) - backup panel still up, tap Restart again") }
+                runCatching { updateStatus("ERROR: restart failed (${e.message}) - tap Restart in the app again") }
                 runCatching { scheduleWatchdog(this@ProxyService) }
             } finally {
                 restartGuard.set(false)
@@ -1045,11 +1310,16 @@ class ProxyService : Service() {
     }
 
     override fun onDestroy() {
+        // Explicit user STOP clears shouldRun BEFORE stopSelf()/stopService(),
+        // so a false here means the user asked to stop everything. A true
+        // here means the system destroyed us (kill/restart) while we should
+        // still run - the independent backup panel must survive that.
+        val explicitStop = !runCatching { ProxyState.shouldRun(this) }.getOrDefault(true)
         started.set(false)
         pipelineGen.incrementAndGet()
         runCatching { ProxyState.setShouldRun(this, false) }
         runCatching { cancelWatchdog(this) }
-        Log.i(TAG, "proxy_stopped")
+        Log.i(TAG, "proxy_stopped explicit=$explicitStop")
         restartJob?.cancel()
         pipelineJob?.cancel()
         keepAliveJob?.cancel()
@@ -1059,14 +1329,11 @@ class ProxyService : Service() {
             runCatching { socks4?.stop() }
             runCatching { http?.stop() }
             runCatching { panel?.stop() }
-            runCatching { backupPanel?.stop() }
             socks = null
             socks4 = null
             http = null
             panel = null
-            backupPanel = null
         }
-        backupPanelPortActual = 0
         proxyDownNotified = false
         AppState.isIdle.value = false
         AppState.isReforming.value = false
@@ -1076,12 +1343,29 @@ class ProxyService : Service() {
         scope.cancel()
         AppState.running.value = false
         AppState.httpMode.value = false
-        AppState.status.value = "Stopped"
-        AppState.apInfo.value = ApInfo()
+        if (explicitStop) {
+            // Full stop: take the backup panel down too and wipe its display.
+            runCatching { BackupPanelService.stop(this) }
+            backupPanelPortActual = 0
+            AppState.status.value = "Stopped"
+            AppState.apInfo.value = ApInfo()
+        } else {
+            // System-side destroy with shouldRun intact: leave the backup
+            // service (and its port display) alone; the watchdog brings the
+            // proxy pipeline back.
+            runCatching { syncBackupPort() }
+            AppState.status.value = "Restarting..."
+        }
         super.onDestroy()
     }
 
     private fun acquireLocks() {
+        // Never orphan the previous locks: overwriting them without release
+        // lets GC finalize them while held (see "WakeLock finalized while
+        // still held" in logcat), which hands the CPU back to Doze and the
+        // P2P group dies minutes after the app leaves the foreground.
+        // acquireLocks runs on every pipeline (re)start, so release first.
+        runCatching { releaseLocks() }
         try {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
             wakeLock = runCatching {

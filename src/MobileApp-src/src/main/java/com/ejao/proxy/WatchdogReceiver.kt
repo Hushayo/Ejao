@@ -10,6 +10,9 @@ class WatchdogReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         if (!ProxyState.shouldRun(context)) return
         ProxyService.scheduleWatchdog(context)
+        // Backup panel is independent: keep it up even if the proxy itself
+        // can't be (re)started right now (background-start limits, AP down).
+        runCatching { BackupPanelService.start(context) }
         if (AppState.running.value) return
         val start = Intent(context, ProxyService::class.java).setAction(ProxyService.ACTION_START)
         try {
