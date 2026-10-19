@@ -359,6 +359,14 @@ class PanelServer(
             append("\"downBps\":").append(AppState.netDownBps).append(',')
             append("\"upBps\":").append(AppState.netUpBps).append(',')
             append("\"ipv6Drops\":").append(TrafficStats.ipv6UdpDrops.get()).append(',')
+            append("\"ipv6Top\":[")
+            TrafficStats.ipv6TopDestinations(5).forEachIndexed { i, (dst, n) ->
+                if (i > 0) append(',')
+                append("{\"dst\":\"").append(escapeJson(dst)).append("\",\"n\":").append(n).append('}')
+            }
+            append("],")
+            append("\"udpStalls\":").append(TrafficStats.udpStalls.get()).append(',')
+            append("\"udpAddrAdvances\":").append(TrafficStats.udpAddrAdvances.get()).append(',')
             append("\"maxBps\":").append(maxOf(AppState.netMaxBps, TrafficStats.maxBps)).append(',')
             append("\"minBps\":").append(if (AppState.netMinBps > 0) AppState.netMinBps else TrafficStats.minActiveBps).append(',')
             append("\"lanClients\":[")
@@ -731,13 +739,15 @@ class PanelServer(
           }catch(e){}
           return false;
         }
-        function ejaoRate(total,maxBps,minBps,ipv6Drops){          var e=document.getElementById('v-rate');
+        function ejaoRate(total,maxBps,minBps,ipv6Drops,udpStalls,udpAdv,ipv6Top){          var e=document.getElementById('v-rate');
           if(e) e.textContent=ejaoFmtRate(total);
           var mm=document.getElementById('v-rateminmax');
           if(mm){
             var txt='';
             if(maxBps>0||minBps>0) txt='max '+ejaoFmtRate(maxBps||0)+' · min '+ejaoFmtRate(minBps||0);
             if(ipv6Drops>0) txt+=(txt?' · ':'')+'IPv6 dropped '+ipv6Drops+' (IPv4-only proxy)';
+            if(udpStalls>0) txt+=(txt?' · ':'')+'UDP silent target '+udpStalls+(udpAdv>0?' ('+udpAdv+' failover)':'');
+            mm.title=(ipv6Top&&ipv6Top.length)?ipv6Top.map(function(x){return x.dst+' x'+x.n;}).join(', '):'';
             mm.textContent=txt;
           }
           ejaoHist.push(total||0);
@@ -810,7 +820,7 @@ class PanelServer(
             var pe=document.getElementById('v-pass');
             if(pe){pe.setAttribute('data-real',d.passphrase);if(pwShown){pe.textContent=d.passphrase;}}
             set('v-goip',d.goIp);set('v-clients',d.clients);set('v-tunnels',d.tcpTunnels);
-            ejaoRate((d.downBps||0)+(d.upBps||0),d.maxBps||0,d.minBps||0,d.ipv6Drops||0);
+            ejaoRate((d.downBps||0)+(d.upBps||0),d.maxBps||0,d.minBps||0,d.ipv6Drops||0,d.udpStalls||0,d.udpAddrAdvances||0,d.ipv6Top||[]);
             ejaoClients(d.lanClients||[]);
             ejaoDot(d.running);
             ejaoTick();

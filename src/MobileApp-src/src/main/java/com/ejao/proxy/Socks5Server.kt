@@ -42,11 +42,48 @@ class Socks5Server(
     private val onLog: (String) -> Unit = {}
 ) {
 
-    private val workerExecutor = Executors.newCachedThreadPool()
-    private val tcpSem = Semaphore(512)
-    private val udpSem = Semaphore(1024)
-    private val proxyDispatcher = workerExecutor.asCoroutineDispatcher()
-    private val scope = CoroutineScope(SupervisorJob() + proxyDispatcher)
+    // ---- Concurrency budget -------------------------------------------------
+    // Every TCP tunnel pins two threads (one blocking read per direction) and
+    // every UDP session pins one (blocking receive). The old caps (512 TCP /
+    // 1024 UDP) allowed ~2500 live threads, far past Android's per-process
+    // limit: once pthread_create starts failing, new SOCKS handshakes are never
+    // served and clients report 10060 handshake timeouts. So:
+    //   * control plane gets its own small fixed pool - accepting, handshaking
+    //     and sweeping can never be starved by long-lived data sockets
+    //   * data plane stays elastic (a bounded pool would deadlock once every
+    //     thread sits in a blocking read) but the number of live tunnels and
+    //     sessions is capped, which bounds the thread count
+    private val ctlThreads = 16
+    private val dnsThreads = 8
+    private val datagramThreads = 16
+    private val maxTcpTunnels = 64      // x2 blocking threads = 128
+    private val maxUdpSessions = 64     // x1 blocking thread  = 64
+    private val maxUdpAssociates = 32   // x1 blocking thread  = 32
+
+    private fun namedPool(n: Int, prefix: String) = Executors.newFixedThreadPool(n) { r ->
+        Thread(r, prefix).apply { isDaemon = true }
+    }
+
+    private val ctlExecutor = namedPool(ctlThreads, "ejao-ctl")
+    private val dnsExecutor = namedPool(dnsThreads, "ejao-dns")
+    private val datagramExecutor = namedPool(datagramThreads, "ejao-udp")
+    private val dataExecutor = Executors.newCachedThreadPool { r ->
+        Thread(r, "ejao-io").apply { isDaemon = true }
+    }
+    private val ctlDispatcher = ctlExecutor.asCoroutineDispatcher()
+    private val dnsDispatcher = dnsExecutor.asCoroutineDispatcher()
+    private val datagramDispatcher = datagramExecutor.asCoroutineDispatcher()
+    private val dataDispatcher = dataExecutor.asCoroutineDispatcher()
+
+    private val tcpSem = Semaphore(maxTcpTunnels)
+    private val udpSem = Semaphore(maxUdpSessions)
+    private val udpAssocSem = Semaphore(maxUdpAssociates)
+    // DNS is a blocking getaddrinfo: keep it off both the control threads and
+    // the data threads that are holding a live socket.
+    private val proxyDispatcher = dnsDispatcher
+    private val scope = CoroutineScope(SupervisorJob() + ctlDispatcher)
+    private val dataScope = CoroutineScope(SupervisorJob() + dataDispatcher)
+    private val dgramScope = CoroutineScope(SupervisorJob() + datagramDispatcher)
     private val running = AtomicBoolean(true)
     private var serverSocket: ServerSocket? = null
     private var udpSocket: DatagramSocket? = null
@@ -56,13 +93,20 @@ class Socks5Server(
     @Volatile private var cellularNetwork: Network? = null
     private var netCallback: ConnectivityManager.NetworkCallback? = null
 
-    private val maxUdpSessions = 1024
-
     private val socketRcvBuf = 512 * 1024
     private val socketSndBuf = 512 * 1024
 
     private val tunnelIdleTimeoutMs = 100_000
     private val tunnelCount = AtomicInteger(0)
+
+    // UDP "Happy Eyeballs". A datagram can't fail loudly, so a target that
+    // stays silent while we keep transmitting is treated as dead and we move
+    // to the next resolved address. RakNet-style clients hold one destination
+    // for the whole session (they never re-resolve), so this is the only
+    // recovery path they can get from the relay.
+    private val udpStallMs = 4_000L
+    private val udpStallMinPackets = 8L
+    private val udpReresolveMinMs = 30_000L
 
     private val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
@@ -107,6 +151,18 @@ class Socks5Server(
     private class UdpSession(val socket: DatagramSocket) {
         @Volatile var lastActivity = System.currentTimeMillis()
         @Volatile var boundNet: Network? = null
+        // Stall detection: when did upstream last answer us, and how many
+        // packets have we sent since then without a single reply.
+        @Volatile var lastReplyAt = System.currentTimeMillis()
+        @Volatile var lastSendAt = 0L
+        @Volatile var sentSinceReply = 0L
+        @Volatile var lastStallAt = 0L
+        // Fallback ladder: the resolved address list and the one in use.
+        // dstHost is null for raw IPv4 targets (nothing to re-resolve).
+        @Volatile var addrs: List<InetAddress> = emptyList()
+        @Volatile var addrIdx = 0
+        @Volatile var dstHost: String? = null
+        @Volatile var resolvedAt = System.currentTimeMillis()
         val tx = AtomicLong(0L)
         val rx = AtomicLong(0L)
     }
@@ -137,7 +193,12 @@ class Socks5Server(
         udpJob?.cancel()
         udpSweepJob?.cancel()
         scope.cancel()
-        runCatching { workerExecutor.shutdownNow() }
+        dataScope.cancel()
+        dgramScope.cancel()
+        runCatching { ctlExecutor.shutdownNow() }
+        runCatching { dnsExecutor.shutdownNow() }
+        runCatching { datagramExecutor.shutdownNow() }
+        runCatching { dataExecutor.shutdownNow() }
     }
 
     private suspend fun runTcpServer() {
@@ -180,7 +241,9 @@ class Socks5Server(
                 val clientPort = pkt.port
                 val dataCopy = buf.copyOf(pkt.length)
                 if (clientAddr == null) continue
-                scope.launch { handleUdpPacket(sock, clientAddr, clientPort, dataCopy) }
+                // Short-lived work with its own small pool: a datagram arrival
+                // must never wait behind a long-lived blocking read.
+                dgramScope.launch { handleUdpPacket(sock, clientAddr, clientPort, dataCopy) }
             }
         } catch (e: Exception) {
             if (running.get()) onLog("UDP server error: $e")
@@ -256,6 +319,9 @@ class Socks5Server(
         clientIp: String
     ) {
         tcpSem.withPermit {
+        // The tunnel's lifetime runs on the data pool, not the control pool:
+        // the handshake thread is released as soon as this suspends.
+        withContext(dataDispatcher) {
             var upstream: Socket? = null
             tunnelCount.incrementAndGet()
             AppState.tcpTunnels.value = tunnelCount.get()
@@ -325,13 +391,13 @@ class Socks5Server(
                 onLog("TCP $target:$targetPort")
                 val tx = AtomicLong(0L)
                 val rx = AtomicLong(0L)
-                val jobIn = scope.launch {
+                val jobIn = dataScope.launch {
                     try { tx.set(pump(input, up.getOutputStream()) { n ->
                         TrafficStats.addTx(n.toLong())
                         ClientUsage.add(clientIp, n.toLong())
                     }) } finally { runCatching { up.shutdownOutput() } }
                 }
-                val jobOut = scope.launch {
+                val jobOut = dataScope.launch {
                     try { rx.set(pump(up.getInputStream(), output) { n ->
                         TrafficStats.addRx(n.toLong())
                         ClientUsage.add(clientIp, n.toLong())
@@ -350,9 +416,28 @@ class Socks5Server(
                 AppState.tcpTunnels.value = if (left < 0) 0 else left
             }
         }
+        }
     }
 
     private suspend fun handleUdpAssociate(client: Socket, input: DataInputStream, output: DataOutputStream) {
+        // One thread is pinned for as long as the client holds this TCP open,
+        // so it has to come out of the data budget - and be refused rather than
+        // queued when the budget is gone, otherwise the client hangs on a
+        // handshake it will never get an answer to.
+        if (!udpAssocSem.tryAcquire()) {
+            onLog("UDP associate refused: $maxUdpAssociates already active")
+            runCatching { replyError(output, 0x01) }
+            runCatching { client.close() }
+            return
+        }
+        try {
+            withContext(dataDispatcher) { udpAssociateLoop(client, input, output) }
+        } finally {
+            udpAssocSem.release()
+        }
+    }
+
+    private suspend fun udpAssociateLoop(client: Socket, input: DataInputStream, output: DataOutputStream) {
         // Gaming fix: this TCP connection IS the UDP session lifetime for
         // ProxiFyre. The old 300s soTimeout (set in handleTcpClient) killed
         // it mid-game (~5min idle on TCP while UDP was active), tearing down
@@ -419,14 +504,18 @@ class Socks5Server(
                     dstInet = parseIpv4LiteralFast(dstHost)
                 }
                 0x04 -> {
-                    // IPv6 targets unsupported (IPv4-only egress): count it so
-                    // the panel can show WHY Edge/QUIC keeps spinning, and log
+                    // IPv6 targets unsupported (IPv4-only egress): count it per
+                    // destination so the panel can name the offender, and log
                     // at most once a minute so long sessions don't spam.
-                    val total = TrafficStats.countIpv6Drop()
+                    if (data.size < idx + 16 + 2) return
+                    val v6 = runCatching {
+                        InetAddress.getByAddress(data.copyOfRange(idx, idx + 16)).hostAddress
+                    }.getOrNull() ?: "ipv6"
+                    val total = TrafficStats.countIpv6Drop(v6)
                     val now = System.currentTimeMillis()
                     val last = lastIpv6DropLogMs.get()
                     if (now - last > 60_000 && lastIpv6DropLogMs.compareAndSet(last, now)) {
-                        onLog("UDP IPv6 target dropped (IPv4-only egress, total=$total) - disable IPv6 on the PC adapter to silence")
+                        onLog("UDP IPv6 target $v6 dropped (IPv4-only egress, total=$total) - disable IPv6 on the PC adapter to silence")
                     }
                     return
                 }
@@ -465,7 +554,7 @@ class Socks5Server(
             }
             val session = sessionNow ?: return
             if (isNew) {
-                scope.launch {
+                dataScope.launch {
                     udpSem.acquire()
                     try {
                         runUdpReplyLoop(session, sock, clientAddr, clientPort)
@@ -475,20 +564,16 @@ class Socks5Server(
                 }
             }
             session.lastActivity = System.currentTimeMillis()
+            // UDP Happy Eyeballs: if this target has gone silent while we keep
+            // transmitting, move to the next resolved address before sending.
+            advanceIfStalled(session, dstHost)
             try {
                 // Fast-path: raw IP needs no DNS. Slow-path keeps the same
                 // 3-step fallback as TCP CONNECT: picked net, then fresh
                 // cellular, then system default.
-                val dstAddr: InetAddress = dstInet ?: try {
-                    resolve(dstHost, net).first()
-                } catch (_: Exception) {
-                    val fresh = runCatching { NetworkUtils.pickCellular(cm, null) }.getOrNull()
-                        ?.takeIf { it != net }
-                    val freshAddr = if (fresh != null) {
-                        runCatching { resolve(dstHost, fresh).first() }.getOrNull()
-                    } else null
-                    freshAddr ?: resolve(dstHost, null).first()
-                }
+                val dstAddr = pickUdpTarget(session, dstHost, dstInet, net)
+                session.lastSendAt = System.currentTimeMillis()
+                session.sentSinceReply++
                 try {
                     session.socket.send(DatagramPacket(payload, payload.size, dstAddr, dstPort))
                     session.tx.addAndGet(payload.size.toLong())
@@ -512,6 +597,96 @@ class Socks5Server(
         } catch (e: Exception) {
             onLog("UDP packet handling error: ${e.message}")
         }
+    }
+
+    /**
+     * Address to send the next datagram to, keeping a per-session fallback
+     * ladder. Raw IPv4 targets have exactly one address and no name to
+     * re-resolve; hostname targets keep their full address list so a silent
+     * first address can be abandoned mid-session.
+     */
+    private suspend fun pickUdpTarget(
+        session: UdpSession,
+        dstHost: String,
+        dstInet: InetAddress?,
+        net: Network?
+    ): InetAddress {
+        if (dstInet != null) {
+            session.addrs = listOf(dstInet)
+            session.addrIdx = 0
+            session.dstHost = null
+            return dstInet
+        }
+        session.addrs.getOrNull(session.addrIdx)?.let { return it }
+        // getaddrinfo blocks for up to 5s; do it on the DNS pool so a lookup
+        // storm can't stall the datagram threads.
+        val list = withContext(proxyDispatcher) { resolveList(dstHost, net) }
+        session.addrs = list
+        session.addrIdx = 0
+        session.dstHost = dstHost
+        session.resolvedAt = System.currentTimeMillis()
+        return list.first()
+    }
+
+    /** Same 3-step network fallback the TCP path uses: picked net, fresh
+     * cellular, then the system default. */
+    private suspend fun resolveList(dstHost: String, net: Network?): List<InetAddress> {
+        return try {
+            resolve(dstHost, net)
+        } catch (_: Exception) {
+            val fresh = runCatching { NetworkUtils.pickCellular(cm, null) }.getOrNull()
+                ?.takeIf { it != net }
+            val freshAddrs = if (fresh != null) {
+                runCatching { resolve(dstHost, fresh) }.getOrNull()
+            } else null
+            freshAddrs ?: resolve(dstHost, null)
+        }
+    }
+
+    /**
+     * Silent-target handling. Called on every outgoing datagram, so it costs
+     * nothing when replies are flowing (sentSinceReply resets on each reply).
+     */
+    private fun advanceIfStalled(session: UdpSession, dstHost: String) {
+        val sent = session.sentSinceReply
+        if (sent < udpStallMinPackets) return
+        val now = System.currentTimeMillis()
+        if (now - session.lastReplyAt < udpStallMs) return
+        if (now - session.lastStallAt < udpStallMs) return
+
+        session.lastStallAt = now
+        session.sentSinceReply = 0
+        session.lastReplyAt = now
+        TrafficStats.udpStalls.incrementAndGet()
+
+        // Raw-IP target: one address, nothing to fall back to and no name to
+        // re-resolve. Count it so the panel can show the dead game server.
+        if (session.dstHost == null) {
+            onLog("UDP stall: $sent packets to raw IP $dstHost with no reply in ${udpStallMs}ms")
+            return
+        }
+
+        val cur = session.addrs.getOrNull(session.addrIdx)
+        val next = session.addrIdx + 1
+        if (next < session.addrs.size) {
+            session.addrIdx = next
+            TrafficStats.udpAddrAdvances.incrementAndGet()
+            onLog(
+                "UDP stall: ${cur?.hostAddress} silent for $sent packets -> trying " +
+                    "${session.addrs[next].hostAddress} for $dstHost"
+            )
+            return
+        }
+        if (now - session.resolvedAt < udpReresolveMinMs) {
+            onLog("UDP stall: last address ${cur?.hostAddress} for $dstHost silent ($sent packets) - re-resolve throttled")
+            return
+        }
+        // Every known address is silent: force a fresh lookup next packet.
+        session.addrs = emptyList()
+        session.addrIdx = 0
+        session.resolvedAt = now
+        EgressManager.clearDnsHost(dstHost)
+        onLog("UDP stall: all addresses for $dstHost silent - re-resolving")
     }
 
     private fun enforceUdpSessionCap() {
@@ -585,6 +760,8 @@ class Socks5Server(
                     break
                 }
                 session.lastActivity = System.currentTimeMillis()
+                session.lastReplyAt = session.lastActivity
+                session.sentSinceReply = 0
                 val src = pkt.address
                 val srcPort = pkt.port
                 val dataLen = pkt.length
