@@ -56,9 +56,9 @@ class Socks5Server(
     private val ctlThreads = 16
     private val dnsThreads = 8
     private val datagramThreads = 16
-    private val maxTcpTunnels = 64      // x2 blocking threads = 128
-    private val maxUdpSessions = 64     // x1 blocking thread  = 64
-    private val maxUdpAssociates = 32   // x1 blocking thread  = 32
+    private val maxTcpTunnels = 128     // x2 blocking threads = 256
+    private val maxUdpSessions = 256     // x1 blocking thread  = 256
+    private val maxUdpAssociates = 128   // x1 blocking thread  = 128
 
     private fun namedPool(n: Int, prefix: String) = Executors.newFixedThreadPool(n) { r ->
         Thread(r, prefix).apply { isDaemon = true }
@@ -104,8 +104,8 @@ class Socks5Server(
     // to the next resolved address. RakNet-style clients hold one destination
     // for the whole session (they never re-resolve), so this is the only
     // recovery path they can get from the relay.
-    private val udpStallMs = 4_000L
-    private val udpStallMinPackets = 8L
+    private val udpStallMs = 8_000L
+    private val udpStallMinPackets = 32L
     private val udpReresolveMinMs = 30_000L
 
     private val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -225,7 +225,7 @@ class Socks5Server(
         try {
             val sock = DatagramSocket(null)
             sock.reuseAddress = true
-            runCatching { sock.receiveBufferSize = 2 * 1024 * 1024 }
+            runCatching { sock.receiveBufferSize = 4 * 1024 * 1024 }
             runCatching { sock.sendBufferSize = socketSndBuf }
             sock.bind(InetSocketAddress("0.0.0.0", port))
             udpSocket = sock
