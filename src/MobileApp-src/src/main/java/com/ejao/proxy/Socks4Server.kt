@@ -327,7 +327,7 @@ class Socks4Server(
                 dst.write(buf, 0, n)
                 total += n
                 onChunk?.invoke(n)
-                if (n < buf.size) dst.flush()
+                dst.flush()
             }
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) throw e
