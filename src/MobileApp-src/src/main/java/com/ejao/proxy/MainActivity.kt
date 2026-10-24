@@ -93,6 +93,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvGuardStatus: TextView
     private lateinit var etGuardInterval: EditText
     private lateinit var etGuardUnit: AutoCompleteTextView
+    private lateinit var statusDot: View
+    private lateinit var statusCard: View
 
     private val saveHandler = Handler(Looper.getMainLooper())
     private val autosaveRunnable = Runnable { autosave() }
@@ -128,6 +130,8 @@ class MainActivity : AppCompatActivity() {
         tvInfo = findViewById(R.id.tvInfo)
         tvSaved = findViewById(R.id.tvSaved)
         btnToggle = findViewById(R.id.btnToggle)
+        statusDot = findViewById(R.id.statusDot)
+        statusCard = findViewById(R.id.statusCard)
         etSsid = findViewById(R.id.etSsid)
         etPass = findViewById(R.id.etPass)
         etBand = findViewById(R.id.etBand)
@@ -320,8 +324,8 @@ class MainActivity : AppCompatActivity() {
         val btnKeep = findViewById<TextView>(R.id.pillKeep)
         var selected = 0
         fun paint() {
-            btnProxy.setTextColor(if (selected == 0) 0xFF171412.toInt() else 0xFFB8A99F.toInt())
-            btnKeep.setTextColor(if (selected == 1) 0xFF171412.toInt() else 0xFFB8A99F.toInt())
+            btnProxy.isSelected = (selected == 0)
+            btnKeep.isSelected = (selected == 1)
         }
         // Slides the ink capsule behind the active pill button. Both buttons
         // live in the same padded FrameLayout as the indicator, so the target
@@ -695,6 +699,8 @@ class MainActivity : AppCompatActivity() {
     private fun renderRunning(running: Boolean) {
         runCatching {
             btnToggle.text = if (running) "STOP PROXY" else "START PROXY"
+            statusDot.setBackgroundResource(if (running) R.drawable.status_dot_running else R.drawable.status_dot_stopped)
+            statusCard.setBackgroundResource(if (running) R.drawable.bg_status_running else R.drawable.bg_status)
             if (running) {
                 // Capture what the proxy is about to boot on (persistCopy in
                 // startSelectedProxy already validated + saved these).

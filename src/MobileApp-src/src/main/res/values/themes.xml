@@ -19,6 +19,15 @@
         <item name="android:textColorPrimary">@color/text_primary</item>
         <item name="android:textColorSecondary">@color/text_secondary</item>
         <item name="android:buttonCornerRadius">12dp</item>
+
+        <!-- Consistent rounded corners for all Material components -->
+        <item name="shapeAppearanceSmallComponent">@style/ShapeAppearance.Ejao.SmallComponent</item>
+        <item name="shapeAppearanceMediumComponent">@style/ShapeAppearance.Ejao.MediumComponent</item>
+        <item name="shapeAppearanceLargeComponent">@style/ShapeAppearance.Ejao.LargeComponent</item>
+
+        <!-- Checkbox and Switch styles -->
+        <item name="checkboxStyle">@style/Widget.Ejao.CheckBox</item>
+        <item name="materialSwitchStyle">@style/Widget.Ejao.Switch</item>
     </style>
 
     <style name="Widget.Ejao.TextInputLayout" parent="Widget.MaterialComponents.TextInputLayout.OutlinedBox">
@@ -27,5 +36,32 @@
         <item name="boxStrokeWidthFocused">2dp</item>
         <item name="android:textColorHint">#A8A29E</item>
     </style>
+
+    <style name="Widget.Ejao.CheckBox" parent="Widget.MaterialComponents.CompoundButton.CheckBox">
+        <item name="buttonTint">@color/checkbox_selector</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:minHeight">24dp</item>
+    </style>
+
+    <style name="Widget.Ejao.Switch" parent="Widget.MaterialComponents.CompoundButton.Switch">
+        <item name="thumbTint">@color/switch_thumb_selector</item>
+        <item name="trackTint">@color/switch_track_selector</item>
+    </style>
+
+    <style name="ShapeAppearance.Ejao.SmallComponent" parent="ShapeAppearance.MaterialComponents.SmallComponent">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">8dp</item>
+    </style>
+
+    <style name="ShapeAppearance.Ejao.MediumComponent" parent="ShapeAppearance.MaterialComponents.MediumComponent">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">12dp</item>
+    </style>
+
+    <style name="ShapeAppearance.Ejao.LargeComponent" parent="ShapeAppearance.MaterialComponents.LargeComponent">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">16dp</item>
+    </style>
+
     <style name="Theme.Ejao.Gate" parent="android:Theme.NoDisplay" />
 </resources>

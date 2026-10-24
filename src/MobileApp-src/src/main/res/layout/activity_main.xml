@@ -28,30 +28,46 @@
             android:padding="16dp">
 
             <LinearLayout
+                android:id="@+id/statusCard"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:background="@drawable/bg_status"
                 android:orientation="vertical"
                 android:padding="16dp">
 
-                <TextView
-                    android:id="@+id/tvStatus"
+                <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="Stopped"
-                    android:textColor="#F6F5F1"
-                    android:textIsSelectable="true"
-                    android:textSize="15sp"
-                    android:textStyle="bold" />
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <View
+                        android:id="@+id/statusDot"
+                        android:layout_width="10dp"
+                        android:layout_height="10dp"
+                        android:layout_marginEnd="10dp"
+                        android:background="@drawable/status_dot_stopped" />
+
+                    <TextView
+                        android:id="@+id/tvStatus"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Stopped"
+                        android:textColor="@color/text_primary"
+                        android:textIsSelectable="true"
+                        android:textSize="16sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
 
                 <TextView
                     android:id="@+id/tvInfo"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
+                    android:layout_marginTop="10dp"
                     android:fontFamily="monospace"
                     android:text="--"
-                    android:textColor="#D6D3D1"
+                    android:textColor="@color/text_secondary"
                     android:textIsSelectable="true"
                     android:textSize="13sp" />
             </LinearLayout>
@@ -60,29 +76,29 @@
                 android:id="@+id/btnToggle"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
+                android:layout_marginTop="16dp"
                 android:background="@drawable/bg_button_primary"
                 android:fontFamily="sans-serif-medium"
-                android:minHeight="52dp"
-                android:padding="14dp"
+                android:minHeight="56dp"
+                android:padding="16dp"
                 android:text="START PROXY"
                 android:textAllCaps="false"
-                android:textColor="#171412"
-                android:textSize="15sp"
+                android:textColor="@color/on_primary"
+                android:textSize="16sp"
                 android:textStyle="bold"
                 app:backgroundTint="@null" />
 
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="22dp"
-                android:layout_marginBottom="10dp"
+                android:layout_marginTop="24dp"
+                android:layout_marginBottom="12dp"
                 android:drawableStart="@drawable/ic_wifi"
-                android:drawablePadding="8dp"
+                android:drawablePadding="10dp"
                 android:letterSpacing="0.06"
                 android:text="WI-FI DIRECT"
                 android:textColor="@color/text_secondary"
-                android:textSize="12sp"
+                android:textSize="13sp"
                 android:textStyle="bold" />
 
             <LinearLayout
@@ -109,7 +125,7 @@
                     android:id="@+id/tilPass"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
+                    android:layout_marginTop="12dp"
                     android:hint="WiFi Password (8-63 chars, shown for clients to see)">
 
                     <com.google.android.material.textfield.TextInputEditText
@@ -124,7 +140,7 @@
                     android:id="@+id/tilBand"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
+                    android:layout_marginTop="12dp"
                     android:hint="WiFi Band"
                     style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox.ExposedDropdownMenu">
 
@@ -140,17 +156,17 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:layout_marginBottom="4dp"
+                    android:layout_marginTop="6dp"
+                    android:layout_marginBottom="6dp"
                     android:text="2.4 GHz = range + compatibility. 5 GHz = speed. Auto = phone decides."
                     android:textColor="@color/text_secondary"
-                    android:textSize="11sp" />
+                    android:textSize="12sp" />
 
                 <com.google.android.material.textfield.TextInputLayout
                     android:id="@+id/tilProxyType"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
+                    android:layout_marginTop="12dp"
                     android:hint="Proxy Type"
                     style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox.ExposedDropdownMenu">
 
@@ -166,17 +182,17 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:layout_marginBottom="4dp"
+                    android:layout_marginTop="6dp"
+                    android:layout_marginBottom="6dp"
                     android:text="Auto runs SOCKS5 + HTTP together."
                     android:textColor="@color/text_secondary"
-                    android:textSize="11sp" />
+                    android:textSize="12sp" />
 
                 <LinearLayout
                     android:id="@+id/portRow"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
+                    android:layout_marginTop="12dp"
                     android:orientation="horizontal"
                     android:weightSum="2">
 
@@ -214,7 +230,7 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="6dp"
+                    android:layout_marginTop="8dp"
                     android:text="Shown per mode. Hybrid shows both."
                     android:textColor="@color/text_secondary"
                     android:textIsSelectable="true"
@@ -224,14 +240,14 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="22dp"
-                android:layout_marginBottom="10dp"
+                android:layout_marginTop="24dp"
+                android:layout_marginBottom="12dp"
                 android:drawableStart="@drawable/ic_server"
-                android:drawablePadding="8dp"
+                android:drawablePadding="10dp"
                 android:letterSpacing="0.06"
                 android:text="ENDPOINTS"
                 android:textColor="@color/text_secondary"
-                android:textSize="12sp"
+                android:textSize="13sp"
                 android:textStyle="bold" />
 
             <LinearLayout
@@ -254,19 +270,19 @@
                 android:id="@+id/tvSaved"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
+                android:layout_marginTop="16dp"
                 android:text="Auto-saved to config.txt"
                 android:textColor="@color/text_secondary"
-                android:textSize="12sp" />
+                android:textSize="13sp" />
 
             <TextView
                 android:id="@+id/tvConfigPath"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
+                android:layout_marginTop="6dp"
                 android:textColor="@color/text_secondary"
                 android:textIsSelectable="true"
-                android:textSize="11sp" />
+                android:textSize="12sp" />
 
         </LinearLayout>
 
@@ -282,26 +298,29 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:layout_marginBottom="12dp"
                 android:drawableStart="@drawable/ic_clock"
-                android:drawablePadding="8dp"
+                android:drawablePadding="10dp"
                 android:letterSpacing="0.06"
                 android:text="APP UPDATE"
                 android:textColor="@color/text_secondary"
-                android:textSize="12sp"
+                android:textSize="13sp"
                 android:textStyle="bold" />
 
             <Button
                 android:id="@+id/btnCheckUpdate"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
+                android:layout_marginTop="16dp"
                 android:background="@drawable/bg_button_secondary"
                 android:fontFamily="sans-serif-medium"
-                android:minHeight="50dp"
+                android:minHeight="56dp"
+                android:padding="16dp"
                 android:text="CHECK FOR UPDATES"
                 android:textAllCaps="false"
                 android:textColor="@color/text_primary"
-                android:textSize="14sp"
+                android:textSize="16sp"
                 android:textStyle="bold"
                 app:backgroundTint="@null" />
 
@@ -309,9 +328,9 @@
                 android:id="@+id/tvUpdateStatus"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
+                android:layout_marginTop="10dp"
                 android:textColor="@color/text_secondary"
-                android:textSize="12sp" />
+                android:textSize="13sp" />
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -339,16 +358,16 @@
                             android:layout_height="wrap_content"
                             android:text="Background update check"
                             android:textColor="@color/text_primary"
-                            android:textSize="14sp"
+                            android:textSize="15sp"
                             android:textStyle="bold" />
 
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:layout_marginTop="2dp"
+                            android:layout_marginTop="3dp"
                             android:text="Silently downloads new releases"
                             android:textColor="@color/text_secondary"
-                            android:textSize="12sp" />
+                            android:textSize="13sp" />
                     </LinearLayout>
 
                     <com.google.android.material.switchmaterial.SwitchMaterial
@@ -361,7 +380,7 @@
                     android:id="@+id/tilUpdateCheckInterval"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
+                    android:layout_marginTop="16dp"
                     android:hint="Check frequency"
                     style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox.ExposedDropdownMenu">
 
@@ -377,7 +396,7 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
+                    android:layout_marginTop="10dp"
                     android:text="How often Ejao checks GitHub. Off saves metered data."
                     android:textColor="@color/text_secondary"
                     android:textSize="12sp" />
@@ -386,27 +405,29 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="22dp"
+                android:layout_marginTop="24dp"
+                android:layout_marginBottom="12dp"
                 android:drawableStart="@drawable/ic_shield"
-                android:drawablePadding="8dp"
+                android:drawablePadding="10dp"
                 android:letterSpacing="0.06"
                 android:text="KEEP EJAO ALIVE"
                 android:textColor="@color/text_secondary"
-                android:textSize="12sp"
+                android:textSize="13sp"
                 android:textStyle="bold" />
 
             <Button
                 android:id="@+id/btnBattery"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
+                android:layout_marginTop="16dp"
                 android:background="@drawable/bg_button_secondary"
                 android:fontFamily="sans-serif-medium"
-                android:minHeight="50dp"
+                android:minHeight="56dp"
+                android:padding="16dp"
                 android:text="REQUEST BATTERY EXEMPTION"
                 android:textAllCaps="false"
                 android:textColor="@color/text_primary"
-                android:textSize="14sp"
+                android:textSize="16sp"
                 android:textStyle="bold"
                 app:backgroundTint="@null" />
 
@@ -414,14 +435,15 @@
                 android:id="@+id/btnAutostart"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
+                android:layout_marginTop="12dp"
                 android:background="@drawable/bg_button_secondary"
                 android:fontFamily="sans-serif-medium"
-                android:minHeight="50dp"
+                android:minHeight="56dp"
+                android:padding="16dp"
                 android:text="AUTOSTART SETTINGS"
                 android:textAllCaps="false"
                 android:textColor="@color/text_primary"
-                android:textSize="14sp"
+                android:textSize="16sp"
                 android:textStyle="bold"
                 app:backgroundTint="@null" />
 
@@ -429,36 +451,39 @@
                 android:id="@+id/btnWiki"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
+                android:layout_marginTop="12dp"
                 android:background="@drawable/bg_button_secondary"
                 android:fontFamily="sans-serif-medium"
-                android:minHeight="50dp"
+                android:minHeight="56dp"
+                android:padding="16dp"
                 android:text="OPEN SETUP GUIDE (WIKI)"
                 android:textAllCaps="false"
                 android:textColor="@color/text_primary"
-                android:textSize="14sp"
+                android:textSize="16sp"
                 android:textStyle="bold"
                 app:backgroundTint="@null" />
 
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="22dp"
+                android:layout_marginTop="24dp"
+                android:layout_marginBottom="12dp"
                 android:drawableStart="@drawable/ic_pulse"
-                android:drawablePadding="8dp"
+                android:drawablePadding="10dp"
                 android:letterSpacing="0.06"
                 android:text="NETWORK KEEP-ALIVE PING"
                 android:textColor="@color/text_secondary"
-                android:textSize="12sp"
+                android:textSize="13sp"
                 android:textStyle="bold" />
 
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
+                android:layout_marginBottom="6dp"
                 android:text="Periodic pings keep the OS from killing the proxy. Applies on restart."
                 android:textColor="@color/text_secondary"
-                android:textSize="12sp" />
+                android:textSize="13sp" />
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -466,7 +491,7 @@
                 android:layout_marginTop="10dp"
                 android:background="@drawable/bg_card"
                 android:orientation="vertical"
-                android:padding="14dp">
+                android:padding="16dp">
 
                 <com.google.android.material.textfield.TextInputLayout
                     android:id="@+id/tilKeepaliveUrl"
@@ -485,7 +510,7 @@
                     android:id="@+id/tilKeepaliveInterval"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
+                    android:layout_marginTop="12dp"
                     android:hint="Ping interval (seconds, min 15)">
 
                     <com.google.android.material.textfield.TextInputEditText
@@ -499,13 +524,14 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="22dp"
+                android:layout_marginTop="24dp"
+                android:layout_marginBottom="12dp"
                 android:drawableStart="@drawable/ic_server"
-                android:drawablePadding="8dp"
+                android:drawablePadding="10dp"
                 android:letterSpacing="0.06"
                 android:text="CONTROL PANEL"
                 android:textColor="@color/text_secondary"
-                android:textSize="12sp"
+                android:textSize="13sp"
                 android:textStyle="bold" />
 
             <LinearLayout
@@ -514,13 +540,14 @@
                 android:layout_marginTop="10dp"
                 android:background="@drawable/bg_card"
                 android:orientation="vertical"
-                android:padding="14dp">
+                android:padding="16dp">
 
                 <CheckBox
                     android:id="@+id/chkRequireApprovalRestart"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="Require approval for panel restart" />
+                    android:text="Require approval for panel restart"
+                    android:textSize="15sp" />
 
                 <TextView
                     android:layout_width="match_parent"
@@ -528,17 +555,18 @@
                     android:layout_marginTop="8dp"
                     android:text="When on, panel restarts need in-app approval within 10s. Off restarts immediately."
                     android:textColor="@color/text_secondary"
-                    android:textSize="12sp" />
+                    android:textSize="13sp" />
             </LinearLayout>
 
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="22dp"
+                android:layout_marginTop="24dp"
+                android:layout_marginBottom="12dp"
                 android:letterSpacing="0.06"
                 android:text="FEATURE TOGGLES"
                 android:textColor="@color/text_secondary"
-                android:textSize="12sp"
+                android:textSize="13sp"
                 android:textStyle="bold" />
 
             <LinearLayout
@@ -547,63 +575,67 @@
                 android:layout_marginTop="10dp"
                 android:background="@drawable/bg_card"
                 android:orientation="vertical"
-                android:padding="14dp">
+                android:padding="16dp">
 
                 <CheckBox
                     android:id="@+id/chkDisableBandSelector"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="Disable the WiFi band selector" />
+                    android:text="Disable the WiFi band selector"
+                    android:textSize="15sp" />
 
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
+                    android:layout_marginTop="6dp"
                     android:text="Force 2.4 GHz and hide the picker."
                     android:textColor="@color/text_secondary"
-                    android:textSize="12sp" />
+                    android:textSize="13sp" />
 
                 <CheckBox
                     android:id="@+id/chkKeepRetryingReform"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="14dp"
-                    android:text="Keep retrying to reform the hotspot" />
+                    android:layout_marginTop="16dp"
+                    android:text="Keep retrying to reform the hotspot"
+                    android:textSize="15sp" />
 
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
+                    android:layout_marginTop="6dp"
                     android:text="Recreate a dropped group forever instead of leaving the AP dead."
                     android:textColor="@color/text_secondary"
-                    android:textSize="12sp" />
+                    android:textSize="13sp" />
 
                 <CheckBox
                     android:id="@+id/chkAutoRestartOnWifiReturn"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="14dp"
-                    android:text="Auto-restart proxy when WiFi returns" />
+                    android:layout_marginTop="16dp"
+                    android:text="Auto-restart proxy when WiFi returns"
+                    android:textSize="15sp" />
 
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
+                    android:layout_marginTop="6dp"
                     android:text="Bring the proxy up on its own when WiFi turns on."
                     android:textColor="@color/text_secondary"
-                    android:textSize="12sp" />
+                    android:textSize="13sp" />
             </LinearLayout>
 
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="22dp"
+                android:layout_marginTop="24dp"
+                android:layout_marginBottom="12dp"
                 android:drawableStart="@drawable/ic_shield"
-                android:drawablePadding="8dp"
+                android:drawablePadding="10dp"
                 android:letterSpacing="0.06"
                 android:text="WIFI GUARD (ADB, EXPERIMENTAL)"
                 android:textColor="@color/text_secondary"
-                android:textSize="12sp"
+                android:textSize="13sp"
                 android:textStyle="bold" />
 
             <LinearLayout
@@ -612,7 +644,7 @@
                 android:layout_marginTop="10dp"
                 android:background="@drawable/bg_card"
                 android:orientation="vertical"
-                android:padding="14dp">
+                android:padding="16dp">
 
                 <TextView
                     android:id="@+id/tvGuardStatus"
@@ -621,12 +653,12 @@
                     android:text="Guard: DOWN (never started)"
                     android:textColor="@color/text_primary"
                     android:textIsSelectable="true"
-                    android:textSize="13sp" />
+                    android:textSize="14sp" />
 
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
+                    android:layout_marginTop="12dp"
                     android:orientation="horizontal"
                     android:weightSum="2">
 
@@ -667,23 +699,24 @@
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
+                    android:layout_marginTop="6dp"
                     android:text="60s minimum (daemon enforces it). Applies to the next ADB start - re-run the command."
                     android:textColor="@color/text_secondary"
-                    android:textSize="11sp" />
+                    android:textSize="12sp" />
 
                 <Button
                     android:id="@+id/btnGuardCopy"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
+                    android:layout_marginTop="16dp"
                     android:background="@drawable/bg_button_secondary"
                     android:fontFamily="sans-serif-medium"
-                    android:minHeight="50dp"
+                    android:minHeight="56dp"
+                    android:padding="16dp"
                     android:text="COPY ADB GUARD COMMAND"
                     android:textAllCaps="false"
                     android:textColor="@color/text_primary"
-                    android:textSize="14sp"
+                    android:textSize="16sp"
                     android:textStyle="bold"
                     app:backgroundTint="@null" />
 
@@ -691,14 +724,15 @@
                     android:id="@+id/btnGuardRequest"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
+                    android:layout_marginTop="12dp"
                     android:background="@drawable/bg_button_secondary"
                     android:fontFamily="sans-serif-medium"
-                    android:minHeight="50dp"
+                    android:minHeight="56dp"
+                    android:padding="16dp"
                     android:text="REQUEST WIFI NOW"
                     android:textAllCaps="false"
                     android:textColor="@color/text_primary"
-                    android:textSize="14sp"
+                    android:textSize="16sp"
                     android:textStyle="bold"
                     app:backgroundTint="@null" />
 
@@ -706,33 +740,36 @@
                     android:id="@+id/btnGuardStop"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
+                    android:layout_marginTop="12dp"
                     android:background="@drawable/bg_button_secondary"
                     android:fontFamily="sans-serif-medium"
-                    android:minHeight="50dp"
+                    android:minHeight="56dp"
+                    android:padding="16dp"
                     android:text="STOP GUARD"
                     android:textAllCaps="false"
                     android:textColor="@color/text_primary"
-                    android:textSize="14sp"
+                    android:textSize="16sp"
                     android:textStyle="bold"
                     app:backgroundTint="@null" />
 
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
+                    android:layout_marginTop="12dp"
                     android:text="Paste the command on a PC with USB debugging to start a shell-side guard: it turns WiFi back on every interval and on request. No extra app. Stop it anytime with STOP GUARD (or reboot). Re-run after reboot / update. Check status here ~40s after starting."
                     android:textColor="@color/text_secondary"
-                    android:textSize="12sp" />
+                    android:textSize="13sp" />
             </LinearLayout>
 
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="24dp"
+                android:layout_marginTop="28dp"
+                android:layout_marginBottom="16dp"
                 android:text="@string/help"
                 android:textIsSelectable="true"
-                android:textSize="13sp" />
+                android:textSize="14sp"
+                android:textColor="@color/text_secondary" />
 
         </LinearLayout>
 
@@ -766,13 +803,14 @@
                 android:id="@+id/pillProxy"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
+                android:background="@drawable/pill_tab_bg"
                 android:drawableTop="@drawable/ic_server"
                 android:drawablePadding="2dp"
                 android:gravity="center"
                 android:minWidth="118dp"
                 android:padding="10dp"
                 android:text="Proxy"
-                android:textColor="#171412"
+                android:textColor="@color/pill_tab_text_selector"
                 android:textSize="12sp"
                 android:textStyle="bold" />
 
@@ -780,13 +818,14 @@
                 android:id="@+id/pillKeep"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
+                android:background="@drawable/pill_tab_bg"
                 android:drawableTop="@drawable/ic_shield"
                 android:drawablePadding="2dp"
                 android:gravity="center"
                 android:minWidth="118dp"
                 android:padding="10dp"
                 android:text="Keep-Alive"
-                android:textColor="#B8A99F"
+                android:textColor="@color/pill_tab_text_selector"
                 android:textSize="12sp"
                 android:textStyle="bold" />
         </LinearLayout>
