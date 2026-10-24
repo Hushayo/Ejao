@@ -55,7 +55,7 @@ class Socks5Server(
     //     sessions is capped, which bounds the thread count
     private val ctlThreads = 16
     private val dnsThreads = 8
-    private val datagramThreads = 16
+    private val datagramThreads = 32
     private val maxTcpTunnels = 128     // x2 blocking threads = 256
     private val maxUdpSessions = 256     // x1 blocking thread  = 256
     private val maxUdpAssociates = 128   // x1 blocking thread  = 128
@@ -93,8 +93,8 @@ class Socks5Server(
     @Volatile private var cellularNetwork: Network? = null
     private var netCallback: ConnectivityManager.NetworkCallback? = null
 
-    private val socketRcvBuf = 512 * 1024
-    private val socketSndBuf = 512 * 1024
+    private val socketRcvBuf = 4 * 1024 * 1024
+    private val socketSndBuf = 1 * 1024 * 1024
 
     private val tunnelIdleTimeoutMs = 100_000
     private val tunnelCount = AtomicInteger(0)
@@ -148,7 +148,7 @@ class Socks5Server(
     private val udpSessions = ConcurrentHashMap<String, UdpSession>()
     private val lastIpv6DropLogMs = AtomicLong(0L)
 
-    private class UdpSession(val socket: DatagramSocket) {
+    private class UdpSession(val socket: DatagramSocket, val clientKey: String = "") {
         @Volatile var lastActivity = System.currentTimeMillis()
         @Volatile var boundNet: Network? = null
         // Stall detection: when did upstream last answer us, and how many
@@ -301,7 +301,24 @@ class Socks5Server(
         return EgressManager.resolve(host, net)
     }
 
-    private fun pickNet(host: String? = null): Network? = EgressManager.pickNet(cm, host)
+    private fun pickNet(host: String? = null): Network? {
+        val cell = NetworkUtils.pickCellular(cm, cellularNetwork)
+        val cellular = cell != null && runCatching {
+            cm.getNetworkCapabilities(cell)?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true
+        }.getOrDefault(false)
+        if (cellular) return cell
+        // Fall back only if no validated cellular interface exists.
+        val nets = runCatching { cm.allNetworks }.getOrNull().orEmpty()
+        val directCell = nets.firstOrNull { n ->
+            runCatching {
+                val caps = cm.getNetworkCapabilities(n)
+                caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) &&
+                    caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            }.getOrDefault(false)
+        }
+        if (directCell != null) return directCell
+        return EgressManager.pickNet(cm, host)
+    }
 
     private fun isValidCellular(n: Network?): Boolean {
         if (n == null) return false
@@ -541,7 +558,7 @@ class Socks5Server(
                     onLog("UDP session create fail: ${e.message}")
                     return
                 }
-                val newSession = UdpSession(fwd).also { it.boundNet = net }
+                val newSession = UdpSession(fwd, clientKey).also { it.boundNet = net }
                 val prev = udpSessions.putIfAbsent(clientKey, newSession)
                 if (prev == null) {
                     sessionNow = newSession
@@ -662,7 +679,10 @@ class Socks5Server(
         // Raw-IP target: one address, nothing to fall back to and no name to
         // re-resolve. Count it so the panel can show the dead game server.
         if (session.dstHost == null) {
-            onLog("UDP stall: $sent packets to raw IP $dstHost with no reply in ${udpStallMs}ms")
+            onLog("UDP stall: $sent packets to raw IP $dstHost with no reply in ${udpStallMs}ms - rebuilding socket")
+            if (session.clientKey.isNotEmpty() && udpSessions.remove(session.clientKey, session)) {
+                runCatching { session.socket.close() }
+            }
             return
         }
 
@@ -775,7 +795,10 @@ class Socks5Server(
                 if (total > response.size) continue
                 System.arraycopy(header, 0, response, 0, 10)
                 System.arraycopy(buf, 0, response, 10, dataLen)
-                relaySocket.send(DatagramPacket(response, total, clientAddr, clientPort))
+                val ok = runCatching {
+                    relaySocket.send(DatagramPacket(response, total, clientAddr, clientPort))
+                }.isSuccess
+                if (!ok) break
                 TrafficStats.addRx(total.toLong())
                 ClientUsage.add(clientAddr.hostAddress ?: "", total.toLong())
             }
