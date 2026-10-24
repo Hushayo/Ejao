@@ -9,7 +9,7 @@
 ![License](https://img.shields.io/github/license/Hushayo/Ejao)
 
 > [!NOTE]
-> **Stable** Things are subject to change.
+> **Mostly done - can be used normally.** For experimental/random builds check [ExtrasBuilds](https://github.com/Hushayo/Ejao/tree/ExtrasBuilds).
 
 > [!WARNING]
 > This application is tested only on Windows machine. I do not provide tutorial on how to do it on a phone.
