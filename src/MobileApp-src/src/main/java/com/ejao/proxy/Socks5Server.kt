@@ -95,6 +95,10 @@ class Socks5Server(
 
     private val socketRcvBuf = 4 * 1024 * 1024
     private val socketSndBuf = 1 * 1024 * 1024
+    // IPTOS_LOWDELAY: best-effort DSCP hint for real-time traffic. Stacks and
+    // carriers that ignore it lose nothing; the ones that honour it stop
+    // queueing game packets behind bulk downloads on the same bearer.
+    private val socketTrafficClass = 0x10
 
     private val tunnelIdleTimeoutMs = 100_000
     private val tunnelCount = AtomicInteger(0)
@@ -119,10 +123,17 @@ class Socks5Server(
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 cellularNetwork = network
+                // New egress: every UDP socket bound to the old one has to be
+                // rebuilt (see egressEpoch), otherwise game packets keep
+                // going into a blackholed socket until the 5min sweep.
+                egressEpoch++
                 onLog("Bound to cellular network: $network")
             }
             override fun onLost(network: Network) {
-                if (cellularNetwork == network) cellularNetwork = null
+                if (cellularNetwork == network) {
+                    cellularNetwork = null
+                    egressEpoch++
+                }
             }
         }
         netCallback = cb
@@ -143,10 +154,16 @@ class Socks5Server(
     private fun tuneSocket(sock: Socket) {
         runCatching { sock.setReceiveBufferSize(socketRcvBuf) }
         runCatching { sock.setSendBufferSize(socketSndBuf) }
+        runCatching { sock.trafficClass = socketTrafficClass }
     }
 
     private val udpSessions = ConcurrentHashMap<String, UdpSession>()
     private val lastIpv6DropLogMs = AtomicLong(0L)
+
+    // Bumped whenever the cellular egress appears or goes away. Sessions
+    // remember the epoch they were bound in; a mismatch means the socket is
+    // bound to a stale network and must be rebuilt rather than blackholing.
+    @Volatile private var egressEpoch = 0
 
     private class UdpSession(val socket: DatagramSocket, val clientKey: String = "") {
         @Volatile var lastActivity = System.currentTimeMillis()
@@ -163,9 +180,26 @@ class Socks5Server(
         @Volatile var addrIdx = 0
         @Volatile var dstHost: String? = null
         @Volatile var resolvedAt = System.currentTimeMillis()
+        @Volatile var boundEpoch = 0
+        // Fast-path destination cache. A game talks to one server address for
+        // the whole match, so the datagram the receive thread relays inline
+        // only has to compare the client's raw address bytes + port. Swapped
+        // atomically as one immutable snapshot so the receive thread can never
+        // mix a new key with an old address; null = needs the coroutine path.
+        @Volatile var dest: UdpDest? = null
         val tx = AtomicLong(0L)
         val rx = AtomicLong(0L)
     }
+
+    /** What [UdpSession.dest] caches: the client's destination key + the
+     *  InetAddress it resolved to. */
+    private class UdpDest(
+        val keyIp: Int,                 // ATYP 0x01 key
+        val keyHost: ByteArray?,        // ATYP 0x03 key (raw name bytes)
+        val port: Int,
+        val addr: InetAddress,
+        val host: String                // logs / egress stats
+    )
 
     fun start() {
         running.set(true)
@@ -227,9 +261,17 @@ class Socks5Server(
             sock.reuseAddress = true
             runCatching { sock.receiveBufferSize = 4 * 1024 * 1024 }
             runCatching { sock.sendBufferSize = socketSndBuf }
+            runCatching { sock.trafficClass = socketTrafficClass }
             sock.bind(InetSocketAddress("0.0.0.0", port))
             udpSocket = sock
             val buf = ByteArray(65535)
+            val sendPkt = DatagramPacket(ByteArray(0), 0)
+            // One client sends the whole game flow, so cache its strings: the
+            // hot path must not allocate an IP string + session key per packet.
+            var lastAddr: InetAddress? = null
+            var lastPort = -1
+            var lastIp = ""
+            var lastKey = ""
             while (running.get()) {
                 val pkt = DatagramPacket(buf, buf.size)
                 try {
@@ -237,17 +279,121 @@ class Socks5Server(
                 } catch (e: Exception) {
                     break
                 }
-                val clientAddr = pkt.address
+                val clientAddr = pkt.address ?: continue
                 val clientPort = pkt.port
+                if (clientAddr != lastAddr || clientPort != lastPort) {
+                    lastAddr = clientAddr
+                    lastPort = clientPort
+                    lastIp = runCatching { clientAddr.hostAddress }.getOrNull() ?: ""
+                    lastKey = "$lastIp:$clientPort"
+                }
+                // Steady-state game traffic is relayed inline on this thread.
+                if (udpFastPath(lastIp, lastKey, buf, pkt.length, sendPkt)) continue
                 val dataCopy = buf.copyOf(pkt.length)
-                if (clientAddr == null) continue
-                // Short-lived work with its own small pool: a datagram arrival
+                // Anything unusual gets its own pool thread: a datagram arrival
                 // must never wait behind a long-lived blocking read.
                 dgramScope.launch { handleUdpPacket(sock, clientAddr, clientPort, dataCopy) }
             }
         } catch (e: Exception) {
             if (running.get()) onLog("UDP server error: $e")
         }
+    }
+
+    /**
+     * Inline relay for the steady state of a game session.
+     *
+     * The old path copied every datagram, dispatched a coroutine onto the UDP
+     * pool, re-picked the egress network (binder round-trip behind a global
+     * lock shared by every thread) and only then sent it. A game's 30-60
+     * packets/s therefore sat in a queue behind each other - exactly the
+     * 100-300ms of ping + jitter this fixes. Here a session whose destination
+     * is already cached (raw IPv4 or domain name, both compared as raw bytes)
+     * is sent directly from the receive thread: no copy, no dispatch, no
+     * ConnectivityManager query, no DNS.
+     *
+     * Returns false for anything unusual (new session, changed destination,
+     * IPv6, stall, dead socket) so the coroutine path can log it and recover.
+     */
+    private fun udpFastPath(
+        clientIp: String,
+        clientKey: String,
+        data: ByteArray,
+        len: Int,
+        sendPkt: DatagramPacket
+    ): Boolean {
+        if (len < 10) return false
+        if (data[0].toInt() != 0 || data[1].toInt() != 0) return false
+        if (data[2].toInt() != 0) return false // FRAG != 0: fragmentation unsupported
+        val atyp = data[3].toInt() and 0xff
+        val portOff: Int
+        when (atyp) {
+            0x01 -> portOff = 8
+            0x03 -> {
+                val hostLen = data[4].toInt() and 0xff
+                if (hostLen == 0) return false
+                portOff = 5 + hostLen
+            }
+            else -> return false
+        }
+        if (len < portOff + 2) return false
+        val dstPort = ((data[portOff].toInt() and 0xff) shl 8) or (data[portOff + 1].toInt() and 0xff)
+        val payloadOff = portOff + 2
+        val payloadLen = len - payloadOff
+
+        val session = udpSessions[clientKey] ?: return false
+        if (session.boundEpoch != egressEpoch) return false
+        // Destination must be exactly what the coroutine path resolved last
+        // time - compared as raw bytes so hostname targets stay fast too.
+        val dest = session.dest ?: return false
+        if (dest.port != dstPort) return false
+        val hostKey = dest.keyHost
+        if (hostKey == null) {
+            if (atyp != 0x01 || ipv4ToInt(data, 4) != dest.keyIp) return false
+        } else {
+            if (atyp != 0x03 || !bytesEqual(data, 5, hostKey)) return false
+        }
+        val now = System.currentTimeMillis()
+        // A silent target needs the full stall ladder (log + rebuild +
+        // re-resolve), so that rare case stays on the coroutine path.
+        if (session.sentSinceReply >= udpStallMinPackets &&
+            now - session.lastReplyAt >= udpStallMs &&
+            now - session.lastStallAt >= udpStallMs
+        ) return false
+
+        try {
+            sendPkt.setData(data.copyOfRange(payloadOff, len), 0, payloadLen)
+            sendPkt.setAddress(dest.addr)
+            sendPkt.setPort(dest.port)
+            session.socket.send(sendPkt)
+        } catch (_: Exception) {
+            // Dead/blackholed socket: let the coroutine path report it and
+            // rebuild the session on a fresh network binding.
+            return false
+        }
+
+        session.lastActivity = now
+        session.lastSendAt = now
+        session.sentSinceReply++
+        session.tx.addAndGet(payloadLen.toLong())
+        TrafficStats.addTx(payloadLen.toLong())
+        EgressManager.reportSuccess(dest.host)
+        ClientUsage.add(clientIp, payloadLen.toLong())
+        return true
+    }
+
+    private fun ipv4ToInt(b: ByteArray, off: Int): Int =
+        ((b[off].toInt() and 0xff) shl 24) or
+            ((b[off + 1].toInt() and 0xff) shl 16) or
+            ((b[off + 2].toInt() and 0xff) shl 8) or
+            (b[off + 3].toInt() and 0xff)
+
+    /** Compares data[off until off + other.size] with other - no allocation. */
+    private fun bytesEqual(data: ByteArray, off: Int, other: ByteArray): Boolean {
+        if (off + other.size > data.size) return false
+        for (i in other.indices) {
+            if (data[off + i] != other[i]) return false
+        }
+        return true
     }
 
     private suspend fun handleTcpClient(client: Socket) {
@@ -501,6 +647,10 @@ class Socks5Server(
             // ~all raw IPs). Old code stringified then re-resolved every
             // packet via Network.getAllByName = binder + pool per datagram.
             var dstInet: InetAddress? = null
+            // Cache key as the client sent it, so udpFastPath can compare raw
+            // bytes instead of re-parsing + re-resolving per datagram.
+            var dstIpKey = 0
+            var dstHostKey: ByteArray? = null
             when (atyp) {
                 0x01 -> {
                     if (data.size < idx + 4 + 2) return
@@ -508,6 +658,7 @@ class Socks5Server(
                     dstHost = "${ipBytes[0].toInt() and 0xff}.${ipBytes[1].toInt() and 0xff}." +
                         "${ipBytes[2].toInt() and 0xff}.${ipBytes[3].toInt() and 0xff}"
                     dstInet = runCatching { InetAddress.getByAddress(ipBytes) }.getOrNull()
+                    dstIpKey = ipv4ToInt(ipBytes, 0)
                     idx += 4
                 }
                 0x03 -> {
@@ -515,6 +666,7 @@ class Socks5Server(
                     idx += 1
                     if (data.size < idx + len + 2) return
                     dstHost = String(data, idx, len)
+                    dstHostKey = data.copyOfRange(idx, idx + len)
                     idx += len
                     // Domain that is actually an IP literal (ProxiFyre sends
                     // these a lot): parse locally, no DNS binder call.
@@ -542,8 +694,22 @@ class Socks5Server(
             val payload = data.copyOfRange(idx + 2, data.size)
 
             val clientKey = "${clientAddr.hostAddress}:${clientPort}"
-            val net = pickNet(dstHost)
             var sessionNow = udpSessions[clientKey]
+            // Network handover: a socket bound to the previous network
+            // blackholes instead of failing, so drop the session as soon as
+            // the egress epoch moves and rebuild it on the fresh network.
+            val stale = sessionNow
+            if (stale != null && stale.boundEpoch != egressEpoch) {
+                if (udpSessions.remove(clientKey, stale)) {
+                    runCatching { stale.socket.close() }
+                }
+                sessionNow = null
+            }
+            // Reuse the network this session already bound to. pickNet() is a
+            // binder round-trip behind a global lock, and running it per
+            // datagram serialized every UDP thread - that queueing was the
+            // game's latency and jitter.
+            val net = sessionNow?.boundNet ?: pickNet(dstHost)
             var isNew = false
             if (sessionNow == null) {
                 enforceUdpSessionCap()
@@ -553,12 +719,16 @@ class Socks5Server(
                         it.soTimeout = 1000
                         runCatching { it.receiveBufferSize = socketRcvBuf }
                         runCatching { it.sendBufferSize = socketSndBuf }
+                        runCatching { it.trafficClass = socketTrafficClass }
                     }
                 } catch (e: Exception) {
                     onLog("UDP session create fail: ${e.message}")
                     return
                 }
-                val newSession = UdpSession(fwd, clientKey).also { it.boundNet = net }
+                val newSession = UdpSession(fwd, clientKey).also {
+                    it.boundNet = net
+                    it.boundEpoch = egressEpoch
+                }
                 val prev = udpSessions.putIfAbsent(clientKey, newSession)
                 if (prev == null) {
                     sessionNow = newSession
@@ -589,6 +759,10 @@ class Socks5Server(
                 // 3-step fallback as TCP CONNECT: picked net, then fresh
                 // cellular, then system default.
                 val dstAddr = pickUdpTarget(session, dstHost, dstInet, net)
+                // Publish the destination for udpFastPath. The receive thread
+                // then relays this flow's datagrams inline (no copy, no
+                // dispatch, no network query) until the key stops matching.
+                session.dest = UdpDest(dstIpKey, dstHostKey, dstPort, dstAddr, dstHost)
                 session.lastSendAt = System.currentTimeMillis()
                 session.sentSinceReply++
                 try {
@@ -688,6 +862,10 @@ class Socks5Server(
 
         val cur = session.addrs.getOrNull(session.addrIdx)
         val next = session.addrIdx + 1
+        // Whatever happens next the cached fast-path destination is stale:
+        // null it so the next datagram goes back through pickUdpTarget and
+        // republishes the cache with the address actually in use.
+        session.dest = null
         if (next < session.addrs.size) {
             session.addrIdx = next
             TrafficStats.udpAddrAdvances.incrementAndGet()
@@ -769,6 +947,10 @@ class Socks5Server(
             val header = ByteArray(10)
             header[3] = 0x01 // IPv4
             val response = ByteArray(65535 + 10)
+            // Reused per reply: a game gets hundreds of these per second and
+            // the old code allocated a DatagramPacket + IP string each time.
+            val sendPkt = DatagramPacket(ByteArray(0), 0)
+            val clientIp = runCatching { clientAddr.hostAddress }.getOrNull() ?: ""
             while (running.get()) {
                 val pkt = DatagramPacket(buf, buf.size)
                 try {
@@ -795,12 +977,13 @@ class Socks5Server(
                 if (total > response.size) continue
                 System.arraycopy(header, 0, response, 0, 10)
                 System.arraycopy(buf, 0, response, 10, dataLen)
-                val ok = runCatching {
-                    relaySocket.send(DatagramPacket(response, total, clientAddr, clientPort))
-                }.isSuccess
+                sendPkt.setData(response, 0, total)
+                sendPkt.setAddress(clientAddr)
+                sendPkt.setPort(clientPort)
+                val ok = runCatching { relaySocket.send(sendPkt) }.isSuccess
                 if (!ok) break
                 TrafficStats.addRx(total.toLong())
-                ClientUsage.add(clientAddr.hostAddress ?: "", total.toLong())
+                ClientUsage.add(clientIp, total.toLong())
             }
         } finally {
             runCatching { session.socket.close() }
