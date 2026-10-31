@@ -117,6 +117,14 @@ class Socks5Server(
     private val udpStallMs = 8_000L
     private val udpStallMinPackets = 32L
     private val udpReresolveMinMs = 30_000L
+    // Upstream sendto failures are usually transient (ENOBUFS while the radio
+    // drains its queue, ENETUNREACH for a moment during a handover). Retire a
+    // session only after repeated failures spread over time, so one blip
+    // cannot hand the game server a new source port mid-match.
+    private val udpSendFailMinCount = 3
+    private val udpSendFailMinMs = 1_500L
+    // Bounds queued outbound datagrams when sendto blocks on a stalled link.
+    private val udpInflightSem = Semaphore(64)
 
     private val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
@@ -188,6 +196,10 @@ class Socks5Server(
         // atomically as one immutable snapshot so the receive thread can never
         // mix a new key with an old address; null = needs the coroutine path.
         @Volatile var dest: UdpDest? = null
+        // Consecutive sendto failures. Reset by any successful send; only a
+        // socket that keeps failing is retired.
+        val sendFails = AtomicInteger(0)
+        @Volatile var firstSendFailAt = 0L
         val tx = AtomicLong(0L)
         val rx = AtomicLong(0L)
     }
@@ -271,7 +283,6 @@ class Socks5Server(
             sock.bind(InetSocketAddress("0.0.0.0", port))
             udpSocket = sock
             val buf = ByteArray(65535)
-            val sendPkt = DatagramPacket(ByteArray(0), 0)
             // One client sends the whole game flow, so cache its strings: the
             // hot path must not allocate an IP string + session key per packet.
             var lastAddr: InetAddress? = null
@@ -293,8 +304,9 @@ class Socks5Server(
                     lastIp = runCatching { clientAddr.hostAddress }.getOrNull() ?: ""
                     lastKey = "$lastIp:$clientPort"
                 }
-                // Steady-state game traffic is relayed inline on this thread.
-                if (udpFastPath(lastIp, lastKey, buf, pkt.length, sendPkt)) continue
+                // Steady-state game traffic skips the coroutine path; only its
+                // blocking sendto is handed to the pool (see udpFastPath).
+                if (udpFastPath(lastIp, lastKey, buf, pkt.length)) continue
                 val dataCopy = buf.copyOf(pkt.length)
                 // Anything unusual gets its own pool thread: a datagram arrival
                 // must never wait behind a long-lived blocking read.
@@ -314,8 +326,10 @@ class Socks5Server(
      * packets/s therefore sat in a queue behind each other - exactly the
      * 100-300ms of ping + jitter this fixes. Here a session whose destination
      * is already cached (raw IPv4 or domain name, both compared as raw bytes)
-     * is sent directly from the receive thread: no copy, no dispatch, no
-     * ConnectivityManager query, no DNS.
+     * skips all of that: no ConnectivityManager query, no DNS, no slow-path
+     * coroutine. Only the blocking sendto goes to the pool, because a stalled
+     * radio can leave it waiting for a buffer slot - and this is the single
+     * receive thread every client's UDP depends on.
      *
      * Returns false for anything unusual (new session, changed destination,
      * IPv6, stall, dead socket) so the coroutine path can log it and recover.
@@ -324,8 +338,7 @@ class Socks5Server(
         clientIp: String,
         clientKey: String,
         data: ByteArray,
-        len: Int,
-        sendPkt: DatagramPacket
+        len: Int
     ): Boolean {
         if (len < 10) return false
         if (data[0].toInt() != 0 || data[1].toInt() != 0) return false
@@ -356,7 +369,10 @@ class Socks5Server(
         if (hostKey == null) {
             if (atyp != 0x01 || ipv4ToInt(data, 4) != dest.keyIp) return false
         } else {
-            if (atyp != 0x03 || !bytesEqual(data, 5, hostKey)) return false
+            // Compare the name length first: matching only a prefix would
+            // treat "game.com" and "game.com.evil" as the same destination.
+            if (atyp != 0x03 || portOff - 5 != hostKey.size) return false
+            if (!bytesEqual(data, 5, hostKey, len)) return false
         }
         val now = System.currentTimeMillis()
         // A silent target needs the full stall ladder (log + rebuild +
@@ -366,25 +382,51 @@ class Socks5Server(
             now - session.lastStallAt >= udpStallMs
         ) return false
 
-        try {
-            sendPkt.setData(data.copyOfRange(payloadOff, len), 0, payloadLen)
-            sendPkt.setAddress(dest.addr)
-            sendPkt.setPort(dest.port)
-            session.socket.send(sendPkt)
-        } catch (_: Exception) {
-            // Dead/blackholed socket: let the coroutine path report it and
-            // rebuild the session on a fresh network binding.
-            return false
-        }
-
+        val payload = data.copyOfRange(payloadOff, len)
+        val sock = session.socket
+        val dst = dest
         session.lastActivity = now
         session.lastSendAt = now
         session.sentSinceReply++
         session.tx.addAndGet(payloadLen.toLong())
         TrafficStats.addTx(payloadLen.toLong())
-        EgressManager.reportSuccess(dest.host)
         ClientUsage.add(clientIp, payloadLen.toLong())
+        // Never call sendto on this thread. If the radio stalls and the socket
+        // send buffer fills, sendto blocks - and then every UDP client would
+        // stop being relayed. The gate drops (rather than queues) datagrams
+        // once the pool is congested; UDP tolerates that far better.
+        if (!udpInflightSem.tryAcquire()) return true
+        dgramScope.launch {
+            try {
+                sock.send(DatagramPacket(payload, payload.size, dst.addr, dst.port))
+                session.sendFails.set(0)
+                EgressManager.reportSuccess(dst.host)
+            } catch (e: Exception) {
+                noteUdpSendFail(session, dst.host, e)
+            } finally {
+                udpInflightSem.release()
+            }
+        }
         return true
+    }
+
+    /**
+     * One failed sendto is not a dead session: ENOBUFS while the radio drains
+     * and ENETUNREACH during a handover both clear up in a moment, and
+     * rebuilding would hand the server a new source port mid-match. Only a
+     * socket that keeps failing is retired - the next datagram then rebuilds
+     * it on a fresh binding.
+     */
+    private fun noteUdpSendFail(session: UdpSession, host: String, e: Exception) {
+        val n = session.sendFails.incrementAndGet()
+        val now = System.currentTimeMillis()
+        if (n == 1) session.firstSendFailAt = now
+        if (n < udpSendFailMinCount || now - session.firstSendFailAt < udpSendFailMinMs) return
+        EgressManager.reportFailure(host)
+        if (session.clientKey.isNotEmpty() && udpSessions.remove(session.clientKey, session)) {
+            runCatching { session.socket.close() }
+            onLog("UDP send fail $host via ${session.boundNet}: ${e.message} - session rebuilt")
+        }
     }
 
     private fun ipv4ToInt(b: ByteArray, off: Int): Int =
@@ -393,9 +435,13 @@ class Socks5Server(
             ((b[off + 2].toInt() and 0xff) shl 8) or
             (b[off + 3].toInt() and 0xff)
 
-    /** Compares data[off until off + other.size] with other - no allocation. */
-    private fun bytesEqual(data: ByteArray, off: Int, other: ByteArray): Boolean {
-        if (off + other.size > data.size) return false
+    /**
+     * Compares data[off, off + other.size) with other - no allocation.
+     * [limit] is the received datagram length: bytes past it are stale data
+     * from an earlier, longer datagram and must never compare as equal.
+     */
+    private fun bytesEqual(data: ByteArray, off: Int, other: ByteArray, limit: Int): Boolean {
+        if (off < 0 || off + other.size > limit) return false
         for (i in other.indices) {
             if (data[off + i] != other[i]) return false
         }
@@ -736,20 +782,15 @@ class Socks5Server(
                 session.sentSinceReply++
                 try {
                     session.socket.send(DatagramPacket(payload, payload.size, dstAddr, dstPort))
+                    session.sendFails.set(0)
                     session.tx.addAndGet(payload.size.toLong())
                     TrafficStats.addTx(payload.size.toLong())
                     EgressManager.reportSuccess(dstHost)
                     ClientUsage.add(clientAddr.hostAddress ?: "", payload.size.toLong())
                 } catch (e: Exception) {
-                    EgressManager.reportFailure(dstHost)
-                    // Egress socket was bound to the old Network at creation.
-                    // After a cellular handover it blackholes until the 5min
-                    // sweep. Drop it now so the next packet rebuilds on the
-                    // fresh net (1-packet recovery). Reply loop exits on close.
-                    if (udpSessions.remove(clientKey, session)) {
-                        runCatching { session.socket.close() }
-                    }
-                    onLog("UDP send fail $dstHost:$dstPort via $net: ${e.message}")
+                    // Same rule as the fast path: a transient sendto error
+                    // must not cost the client its session and source port.
+                    noteUdpSendFail(session, dstHost, e)
                 }
             } catch (e: Exception) {
                 onLog("UDP packet handling error: ${e.message}")
@@ -920,6 +961,11 @@ class Socks5Server(
             // the old code allocated a DatagramPacket + IP string each time.
             val sendPkt = DatagramPacket(ByteArray(0), 0)
             val clientIp = runCatching { clientAddr.hostAddress }.getOrNull() ?: ""
+            // The client link can refuse a datagram for a moment (buffer full
+            // on the WiFi Direct hop). Tearing the session down over one
+            // refusal forces the game to re-handshake, so only a run of
+            // failures that never recovers ends the loop.
+            var replyFailSince = 0L
             while (running.get()) {
                 val pkt = DatagramPacket(buf, buf.size)
                 try {
@@ -950,7 +996,13 @@ class Socks5Server(
                 sendPkt.setAddress(clientAddr)
                 sendPkt.setPort(clientPort)
                 val ok = runCatching { relaySocket.send(sendPkt) }.isSuccess
-                if (!ok) break
+                val nowMs = System.currentTimeMillis()
+                if (!ok) {
+                    if (replyFailSince == 0L) replyFailSince = nowMs
+                    if (nowMs - replyFailSince >= udpSendFailMinMs) break
+                    continue
+                }
+                replyFailSince = 0L
                 TrafficStats.addRx(total.toLong())
                 ClientUsage.add(clientIp, total.toLong())
             }
