@@ -1,6 +1,7 @@
 package com.ejao.proxy
 
 import android.Manifest
+import android.animation.ObjectAnimator
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -17,24 +18,21 @@ import android.text.Editable
 import android.text.TextWatcher
 import android.util.Log
 import android.view.View
-import android.view.ViewGroup
-import android.widget.ArrayAdapter
-import android.widget.AutoCompleteTextView
-import android.widget.Button
-import android.widget.CheckBox
 import android.widget.EditText
-import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.updatePadding
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import com.google.android.material.switchmaterial.SwitchMaterial
-import android.view.animation.DecelerateInterpolator
+import androidx.appcompat.widget.SwitchCompat
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -49,52 +47,64 @@ class MainActivity : AppCompatActivity() {
 
     private companion object {
         const val TAG = "EjaoMain"
-        val PROXY_TYPE_LABELS = listOf(
-            "Auto (SOCKS5 + HTTP)"
-        )
-        // Band picker. Index order MUST match BAND_VALUES.
+        // Band picker. Index order MUST match BAND_VALUES and the segment order.
         val BAND_LABELS = listOf("2.4 GHz", "5 GHz (default)", "Auto")
         val BAND_VALUES = listOf("2.4", "5", "auto")
-        // Update-check frequency picker (used when background checks are ON).
-        // Index order MUST match UPDATE_INTERVAL_VALUES.
+        // Update-check frequency chips. Index order MUST match UPDATE_INTERVAL_VALUES.
         val UPDATE_INTERVAL_LABELS = listOf("Every 1 hour", "Every 3 hours", "Every 6 hours (default)", "Every 12 hours", "Every 24 hours")
         val UPDATE_INTERVAL_VALUES = listOf(1, 3, 6, 12, 24)
-        // WiFi guard interval unit picker. Index order MUST match GUARD_UNIT_MULTS.
-        val GUARD_UNIT_LABELS = listOf("Seconds", "Minutes", "Hours")
-        val GUARD_UNIT_MULTS = listOf(1L, 60L, 3600L)
     }
 
     private lateinit var tvStatus: TextView
-    private lateinit var tvInfo: TextView
+    private lateinit var tvStatusDetail: TextView
+    private lateinit var tvHeroSub: TextView
+    private lateinit var tvClients: TextView
+    private lateinit var tvSocksPort: TextView
+    private lateinit var tvHttpPort: TextView
+    private lateinit var tvAppStatus: TextView
+    private lateinit var appStatusDot: View
     private lateinit var tvSaved: TextView
-    private lateinit var btnToggle: Button
+    private lateinit var btnToggle: TextView
     private lateinit var etSsid: EditText
     private lateinit var etPass: EditText
-    private lateinit var etBand: AutoCompleteTextView
     private lateinit var etPort: EditText
-    private lateinit var etProxyType: AutoCompleteTextView
     private lateinit var etHttpPort: EditText
     private lateinit var etKeepaliveUrl: EditText
     private lateinit var etKeepaliveInterval: EditText
-    private lateinit var chkRequireApprovalRestart: CheckBox
-    private lateinit var chkDisableBandSelector: CheckBox
-    private lateinit var chkKeepRetryingReform: CheckBox
-    private lateinit var chkAutoRestartOnWifiReturn: CheckBox
-    private lateinit var tvPanelUrl: TextView
-    private lateinit var tilPort: com.google.android.material.textfield.TextInputLayout
-    private lateinit var tilHttpPort: com.google.android.material.textfield.TextInputLayout
-    private lateinit var btnCheckUpdate: Button
+    private lateinit var swRequireApproval: SwitchCompat
+    private lateinit var swAutoRestart: SwitchCompat
+    private lateinit var swKeepRetrying: SwitchCompat
+    private lateinit var swDisableBand: SwitchCompat
+    private lateinit var swAutoUpdate: SwitchCompat
+    private lateinit var btnCheckUpdate: TextView
     private lateinit var tvUpdateStatus: TextView
-    private var updateInProgress = false
-    private lateinit var tilBand: com.google.android.material.textfield.TextInputLayout
-    private lateinit var tilUpdateCheckInterval: com.google.android.material.textfield.TextInputLayout
-    private lateinit var etUpdateCheckInterval: AutoCompleteTextView
-    private lateinit var swAutoUpdate: SwitchMaterial
-    private lateinit var tvGuardStatus: TextView
-    private lateinit var etGuardInterval: EditText
-    private lateinit var etGuardUnit: AutoCompleteTextView
     private lateinit var statusDot: View
-    private lateinit var statusCard: View
+    private lateinit var statusHalo: View
+    private var lampAnimator: ObjectAnimator? = null
+    private var lastRunning: Boolean? = null
+    private lateinit var connectionSection: View
+    private lateinit var bandGroup: View
+    private lateinit var updateChipsRow: View
+    private lateinit var bandSegments: List<TextView>
+    private lateinit var updateChips: List<TextView>
+    private lateinit var rowPanel: View
+    private lateinit var rowBackup: View
+    private lateinit var dividerPanel: View
+    private lateinit var dividerBackup: View
+    private lateinit var tvSocksEndpoint: TextView
+    private lateinit var tvHttpEndpoint: TextView
+    private lateinit var tvPanelEndpoint: TextView
+    private lateinit var tvBackupEndpoint: TextView
+    private lateinit var tvFooterVersion: TextView
+    private var updateInProgress = false
+
+    // UI-only selection state mirrored into config.txt on save.
+    private var selectedBandIdx = 0
+    private var selectedUpdateIdx = 2
+    private var copySocksText = ""
+    private var copyHttpText = ""
+    private var copyPanelUrl = ""
+    private var copyBackupUrl = ""
 
     private val saveHandler = Handler(Looper.getMainLooper())
     private val autosaveRunnable = Runnable { autosave() }
@@ -124,20 +134,58 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         setContentView(R.layout.activity_main)
 
         tvStatus = findViewById(R.id.tvStatus)
-        tvInfo = findViewById(R.id.tvInfo)
+        tvStatusDetail = findViewById(R.id.tvStatusDetail)
+        tvHeroSub = findViewById(R.id.tvHeroSub)
+        tvClients = findViewById(R.id.tvClients)
+        tvSocksPort = findViewById(R.id.tvSocksPort)
+        tvHttpPort = findViewById(R.id.tvHttpPort)
+        tvAppStatus = findViewById(R.id.tvAppStatus)
+        appStatusDot = findViewById(R.id.appStatusDot)
         tvSaved = findViewById(R.id.tvSaved)
         btnToggle = findViewById(R.id.btnToggle)
         statusDot = findViewById(R.id.statusDot)
-        statusCard = findViewById(R.id.statusCard)
+        statusHalo = findViewById(R.id.statusHalo)
+        connectionSection = findViewById(R.id.connectionSection)
         etSsid = findViewById(R.id.etSsid)
         etPass = findViewById(R.id.etPass)
-        etBand = findViewById(R.id.etBand)
         etPort = findViewById(R.id.etPort)
-        etProxyType = findViewById(R.id.etProxyType)
         etHttpPort = findViewById(R.id.etHttpPort)
+        etKeepaliveUrl = findViewById(R.id.etKeepaliveUrl)
+        etKeepaliveInterval = findViewById(R.id.etKeepaliveInterval)
+        swRequireApproval = findViewById(R.id.swRequireApproval)
+        swAutoRestart = findViewById(R.id.swAutoRestart)
+        swKeepRetrying = findViewById(R.id.swKeepRetrying)
+        swDisableBand = findViewById(R.id.swDisableBand)
+        swAutoUpdate = findViewById(R.id.swAutoUpdate)
+        btnCheckUpdate = findViewById(R.id.btnCheckUpdate)
+        tvUpdateStatus = findViewById(R.id.tvUpdateStatus)
+        tvFooterVersion = findViewById(R.id.tvFooterVersion)
+        bandGroup = findViewById(R.id.bandGroup)
+        updateChipsRow = findViewById(R.id.updateChips)
+        bandSegments = listOf(
+            findViewById(R.id.bandSeg24),
+            findViewById(R.id.bandSeg5),
+            findViewById(R.id.bandSegAuto)
+        )
+        updateChips = listOf(
+            findViewById(R.id.chip1h),
+            findViewById(R.id.chip3h),
+            findViewById(R.id.chip6h),
+            findViewById(R.id.chip12h),
+            findViewById(R.id.chip24h)
+        )
+        rowPanel = findViewById(R.id.rowPanel)
+        rowBackup = findViewById(R.id.rowBackup)
+        dividerPanel = findViewById(R.id.dividerPanel)
+        dividerBackup = findViewById(R.id.dividerBackup)
+        tvSocksEndpoint = findViewById(R.id.tvSocksEndpoint)
+        tvHttpEndpoint = findViewById(R.id.tvHttpEndpoint)
+        tvPanelEndpoint = findViewById(R.id.tvPanelEndpoint)
+        tvBackupEndpoint = findViewById(R.id.tvBackupEndpoint)
 
         val config = runCatching { ConfigManager.ensureConfig(this) }
             .getOrDefault(ConfigManager.defaultConfig)
@@ -145,57 +193,72 @@ class MainActivity : AppCompatActivity() {
         etPass.setText(config.password)
         etPort.setText(config.port.toString())
         etHttpPort.setText(config.httpPort.toString())
-        etKeepaliveUrl = findViewById(R.id.etKeepaliveUrl)
-        etKeepaliveInterval = findViewById(R.id.etKeepaliveInterval)
-        chkRequireApprovalRestart = findViewById(R.id.chkRequireApprovalRestart)
-        chkDisableBandSelector = findViewById(R.id.chkDisableBandSelector)
-        tvPanelUrl = findViewById(R.id.tvPanelUrl)
-        tilBand = findViewById(R.id.tilBand)
-        etUpdateCheckInterval = findViewById(R.id.etUpdateCheckInterval)
-        tilUpdateCheckInterval = findViewById(R.id.tilUpdateCheckInterval)
-        swAutoUpdate = findViewById(R.id.swAutoUpdate)
+        etKeepaliveUrl.setText(config.keepaliveUrl)
+        etKeepaliveInterval.setText((config.keepaliveIntervalMs / 1000).toString())
+
+        selectedBandIdx = BAND_VALUES.indexOf(config.band).let { if (it < 0) 0 else it }
+        bindSegmentGroup(bandSegments, selectedBandIdx) { idx ->
+            selectedBandIdx = idx
+            autosave()
+        }
+
+        swRequireApproval.isChecked = config.requireApprovalRestart
+        swRequireApproval.setOnCheckedChangeListener { _, _ -> runCatching { autosave() } }
+        swAutoRestart.isChecked = config.autoRestartOnWifiReturn
+        swAutoRestart.setOnCheckedChangeListener { _, _ -> runCatching { autosave() } }
+        swKeepRetrying.isChecked = config.keepRetryingReform
+        swKeepRetrying.setOnCheckedChangeListener { _, _ -> runCatching { autosave() } }
+        swDisableBand.isChecked = config.disableBandSelector
+        swDisableBand.setOnCheckedChangeListener { _, _ ->
+            runCatching {
+                applyBandSelectorVisibility(swDisableBand.isChecked)
+                autosave()
+            }
+        }
+        applyBandSelectorVisibility(config.disableBandSelector)
+
+        selectedUpdateIdx = UPDATE_INTERVAL_VALUES.indexOf(config.updateCheckIntervalHours).let { if (it < 0) 2 else it }
+        bindSegmentGroup(updateChips, selectedUpdateIdx) { idx ->
+            selectedUpdateIdx = idx
+            runCatching { UpdateChecker.scheduleCheck(this, chosenUpdateIntervalHours()) }
+            autosave()
+        }
         val autoUpdateOn = config.updateCheckIntervalHours > 0
         swAutoUpdate.isChecked = autoUpdateOn
-        tilUpdateCheckInterval.visibility = if (autoUpdateOn) View.VISIBLE else View.GONE
+        updateChipsRow.alpha = if (autoUpdateOn) 1f else 0.45f
+        updateChips.forEach { it.isEnabled = autoUpdateOn }
         swAutoUpdate.setOnCheckedChangeListener { _, isChecked ->
             try {
-                tilUpdateCheckInterval.visibility = if (isChecked) View.VISIBLE else View.GONE
+                updateChipsRow.alpha = if (isChecked) 1f else 0.45f
+                updateChips.forEach { it.isEnabled = isChecked }
                 runCatching { UpdateChecker.scheduleCheck(this, chosenUpdateIntervalHours()) }
                 autosave()
             } catch (e: Exception) {
                 Log.e(TAG, "auto-update toggle failed", e)
             }
         }
-        etKeepaliveUrl.setText(config.keepaliveUrl)
-        etKeepaliveInterval.setText((config.keepaliveIntervalMs / 1000).toString())
-        chkRequireApprovalRestart.isChecked = config.requireApprovalRestart
-        chkRequireApprovalRestart.setOnCheckedChangeListener { _, _ -> runCatching { autosave() } }
-        chkDisableBandSelector.isChecked = config.disableBandSelector
-        chkDisableBandSelector.setOnCheckedChangeListener { _, _ ->
-            runCatching {
-                applyBandSelectorVisibility(chkDisableBandSelector.isChecked)
-                autosave()
-            }
+
+        findViewById<View>(R.id.btnCopySocks).setOnClickListener {
+            copyToClipboard("SOCKS5 endpoint", copySocksText)
         }
-        chkKeepRetryingReform = findViewById(R.id.chkKeepRetryingReform)
-        chkKeepRetryingReform.isChecked = config.keepRetryingReform
-        chkKeepRetryingReform.setOnCheckedChangeListener { _, _ -> runCatching { autosave() } }
-        chkAutoRestartOnWifiReturn = findViewById(R.id.chkAutoRestartOnWifiReturn)
-        chkAutoRestartOnWifiReturn.isChecked = config.autoRestartOnWifiReturn
-        chkAutoRestartOnWifiReturn.setOnCheckedChangeListener { _, _ -> runCatching { autosave() } }
-        tilPort = findViewById(R.id.tilPort)
-        tilHttpPort = findViewById(R.id.tilHttpPort)
-        setupProxyTypeDropdown(config.proxyType)
-        updatePortVisibility(config.proxyType)
-        setupBandDropdown(config.band)
-        applyBandSelectorVisibility(config.disableBandSelector)
-        setupUpdateIntervalDropdown(config.updateCheckIntervalHours)
-        runCatching {
-            findViewById<TextView>(R.id.tvConfigPath).text =
-                "config.txt: ${runCatching { ConfigManager.externalConfigFile(this).absolutePath }.getOrDefault("config.txt")}"
+        findViewById<View>(R.id.btnCopyHttp).setOnClickListener {
+            copyToClipboard("HTTP endpoint", copyHttpText)
+        }
+        findViewById<View>(R.id.btnCopyPanel).setOnClickListener {
+            copyToClipboard("Control panel URL", copyPanelUrl)
+        }
+        findViewById<View>(R.id.btnOpenPanel).setOnClickListener {
+            openExternalUrl(copyPanelUrl)
+        }
+        findViewById<View>(R.id.btnCopyBackup).setOnClickListener {
+            copyToClipboard("Backup panel URL", copyBackupUrl)
+        }
+        findViewById<View>(R.id.btnOpenBackup).setOnClickListener {
+            openExternalUrl(copyBackupUrl)
         }
 
-        runCatching { setupTabs() }
+        runCatching { setupWindowInsets() }
+        runCatching { setupExpanders() }
         runCatching { setupAutosave() }
         runCatching { setupEasterEgg() }
         runCatching { observePanelApproval() }
@@ -203,7 +266,8 @@ class MainActivity : AppCompatActivity() {
         // Notify if no valid password is set, but don't block anything
         if (config.password.length !in 8..63) {
             Log.w(TAG, "no valid password set yet - will error on start until set")
-            tvStatus.text = "Stopped - set a WiFi password (8-63 chars) first"
+            tvHeroSub.text = "Set a Wi-Fi password (8-63 characters) to start the hotspot."
+            runCatching { expand(R.id.groupHotspot, R.id.chevronHotspot) }
         }
 
         btnToggle.setOnClickListener {
@@ -226,14 +290,12 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        findViewById<Button>(R.id.btnWiki).setOnClickListener { runCatching { openWiki() } }
-        findViewById<Button>(R.id.btnBattery).setOnClickListener { runCatching { requestBatteryExemption() } }
-        findViewById<Button>(R.id.btnAutostart).setOnClickListener { runCatching { openAutostartSettings() } }
-        runCatching { setupWifiGuard() }
+        findViewById<View>(R.id.btnWiki).setOnClickListener { runCatching { openWiki() } }
+        findViewById<View>(R.id.btnBattery).setOnClickListener { runCatching { requestBatteryExemption() } }
+        findViewById<View>(R.id.btnAutostart).setOnClickListener { runCatching { openAutostartSettings() } }
 
-        btnCheckUpdate = findViewById(R.id.btnCheckUpdate)
-        tvUpdateStatus = findViewById(R.id.tvUpdateStatus)
-        tvUpdateStatus.text = "You're running ${BuildConfig.VERSION_NAME}."
+        tvUpdateStatus.text = "v${BuildConfig.VERSION_NAME} · GitHub releases"
+        tvFooterVersion.text = "EJAO / 01 · V${BuildConfig.VERSION_NAME} · 192.168.49.1"
         btnCheckUpdate.setOnClickListener {
             runCatching {
                 val ready = AppState.updateAvailable.value
@@ -267,7 +329,23 @@ class MainActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                launch { AppState.status.collect { runCatching { tvStatus.text = it } } }
+                launch {
+                    AppState.status.collect { raw ->
+                        runCatching {
+                            val detail = raw.trim()
+                            // "RUNNING - clients connected: 2" -> "clients connected: 2";
+                            // any extra nuance (re-forming, proxy down) stays visible.
+                            val nuance = detail.removePrefix("RUNNING")
+                                .trim().removePrefix("-").trim()
+                            val show = AppState.running.value &&
+                                detail.isNotEmpty() &&
+                                detail != "Stopped" &&
+                                nuance.isNotEmpty()
+                            tvStatusDetail.text = nuance
+                            tvStatusDetail.visibility = if (show) View.VISIBLE else View.GONE
+                        }
+                    }
+                }
                 launch { AppState.apInfo.collect { runCatching { renderInfo(it) } } }
                 launch { AppState.running.collect { runCatching { renderRunning(it) } } }
                 launch {
@@ -275,10 +353,10 @@ class MainActivity : AppCompatActivity() {
                         runCatching {
                             val apkExists = runCatching { UpdateChecker.downloadedApkFile(this@MainActivity).exists() }.getOrDefault(false)
                             if (tag != null && apkExists) {
-                                btnCheckUpdate.text = "Install update ($tag)"
-                                tvUpdateStatus.text = "Update $tag downloaded in the background - tap to install."
+                                btnCheckUpdate.text = "Install"
+                                tvUpdateStatus.text = "Update $tag downloaded in the background - tap Install."
                             } else {
-                                btnCheckUpdate.text = "Check for updates"
+                                btnCheckUpdate.text = "Check"
                             }
                         }
                     }
@@ -292,12 +370,8 @@ class MainActivity : AppCompatActivity() {
         Log.i(TAG, "onStart - passwordLength=${etPass.text.length}, running=${AppState.running.value}")
     }
 
-    override fun onResume() {
-        super.onResume()
-        runCatching { refreshGuardStatus() }
-    }
-
     override fun onDestroy() {
+        lampAnimator?.cancel()
         saveHandler.removeCallbacks(autosaveRunnable)
         super.onDestroy()
     }
@@ -315,61 +389,97 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun setupTabs() {
-        val tabProxy = findViewById<LinearLayout>(R.id.tabProxy)
-        val tabKeepalive = findViewById<LinearLayout>(R.id.tabKeepalive)
-        val pill = findViewById<View>(R.id.bottomPill)
-        val indicator = findViewById<View>(R.id.pillIndicator)
-        val btnProxy = findViewById<TextView>(R.id.pillProxy)
-        val btnKeep = findViewById<TextView>(R.id.pillKeep)
-        var selected = 0
-        fun paint() {
-            btnProxy.isSelected = (selected == 0)
-            btnKeep.isSelected = (selected == 1)
-        }
-        // Slides the ink capsule behind the active pill button. Both buttons
-        // live in the same padded FrameLayout as the indicator, so the target
-        // button's left edge is already the correct translationX.
-        fun place(animate: Boolean) {
-            val target = if (selected == 0) btnProxy else btnKeep
-            if (target.width == 0 || target.height == 0) return
-            val params = indicator.layoutParams
-            // Only touch layoutParams when the size actually changed: assigning
-            // them always triggers requestLayout, and this runs from pill's own
-            // onLayoutChangeListener, so an unconditional assign loops forever.
-            if (params.width != target.width || params.height != target.height) {
-                params.width = target.width
-                params.height = target.height
-                indicator.layoutParams = params
-            }
-            if (animate) {
-                indicator.animate().translationX(target.left.toFloat())
-                    .setDuration(220)
-                    .setInterpolator(DecelerateInterpolator())
-                    .start()
+    /**
+     * Sparse settings: each section is a plain row that opens in place.
+     * Everything starts collapsed so the first screen stays down to the
+     * status, the primary action and the connection endpoints.
+     */
+    private fun setupExpanders() {
+        bindExpander(R.id.expandHotspot, R.id.groupHotspot, R.id.chevronHotspot)
+        bindExpander(R.id.expandKeepalive, R.id.groupKeepalive, R.id.chevronKeepalive)
+        bindExpander(R.id.expandBehavior, R.id.groupBehavior, R.id.chevronBehavior)
+        bindExpander(R.id.expandUpdates, R.id.groupUpdates, R.id.chevronUpdates)
+        bindExpander(R.id.expandDevice, R.id.groupDevice, R.id.chevronDevice)
+    }
+
+    private fun bindExpander(headerId: Int, contentId: Int, chevronId: Int) {
+        // Chevron points down while closed, up while open.
+        findViewById<View>(chevronId).rotation = 90f
+        findViewById<View>(headerId).setOnClickListener {
+            if (findViewById<View>(contentId).visibility == View.VISIBLE) {
+                collapse(contentId, chevronId)
             } else {
-                indicator.translationX = target.left.toFloat()
+                expand(contentId, chevronId)
             }
         }
-        fun select(i: Int, animate: Boolean = true) {
-            val changed = i != selected
-            selected = i
-            tabProxy.visibility = if (i == 0) View.VISIBLE else View.GONE
-            tabKeepalive.visibility = if (i == 1) View.VISIBLE else View.GONE
-            paint()
-            if (changed || !animate) place(animate)
+    }
+
+    private fun expand(contentId: Int, chevronId: Int) {
+        val content = findViewById<View>(contentId)
+        content.animate().cancel()
+        content.visibility = View.VISIBLE
+        content.alpha = 0f
+        content.translationY = -6f
+        content.animate().alpha(1f).translationY(0f).setDuration(180).start()
+        findViewById<View>(chevronId).animate().rotation(270f).setDuration(180).start()
+    }
+
+    private fun collapse(contentId: Int, chevronId: Int) {
+        val content = findViewById<View>(contentId)
+        content.animate().cancel()
+        content.animate().alpha(0f).translationY(-6f).setDuration(120)
+            .withEndAction {
+                content.visibility = View.GONE
+                content.alpha = 1f
+                content.translationY = 0f
+            }.start()
+        findViewById<View>(chevronId).animate().rotation(90f).setDuration(180).start()
+    }
+
+    /**
+     * Edge-to-edge: the window draws behind the status/navigation bars.
+     * The app bar takes the status-bar inset; the scroll viewport ends above
+     * the gesture bar or the keyboard. The content keeps its own bottom
+     * padding, so add the insets on top of it rather than replacing it.
+     */
+    private fun setupWindowInsets() {
+        val root = findViewById<View>(R.id.root)
+        val appBar = findViewById<View>(R.id.appBar)
+        val scroll = findViewById<View>(R.id.mainScroll)
+        val baseTop = appBar.paddingTop
+        val baseBottom = scroll.paddingBottom
+        ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+            appBar.updatePadding(top = baseTop + bars.top)
+            scroll.updatePadding(bottom = baseBottom + maxOf(bars.bottom, ime.bottom))
+            insets
         }
-        btnProxy.setOnClickListener { select(0) }
-        btnKeep.setOnClickListener { select(1) }
-        btnProxy.post { select(0, animate = false) }
-        // Re-glue the capsule after rotations/resizes change button widths.
-        pill.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> place(false) }
-        // Swipe left/right anywhere on the screen to switch tabs (the app's tabs
-        // are plain LinearLayouts, so we detect the horizontal swipe ourselves
-        // instead of using a ViewPager). direction -1 = next tab, +1 = previous.
-        findViewById<SwipeScrollView>(R.id.mainScroll).onSwipe = { dir ->
-            val target = (selected + dir).coerceIn(0, 1)
-            if (target != selected) select(target)
+        ViewCompat.requestApplyInsets(root)
+    }
+
+    private fun copyToClipboard(label: String, text: String) {
+        if (text.isBlank()) {
+            Toast.makeText(this, "Nothing to copy yet", Toast.LENGTH_SHORT).show()
+            return
+        }
+        runCatching {
+            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            cm.setPrimaryClip(ClipData.newPlainText(label, text))
+            Toast.makeText(this, "$label copied", Toast.LENGTH_SHORT).show()
+        }.onFailure { e ->
+            Log.e(TAG, "copy failed", e)
+            runCatching { Toast.makeText(this, "Couldn't copy", Toast.LENGTH_SHORT).show() }
+        }
+    }
+
+    private fun openExternalUrl(url: String) {
+        if (url.isBlank()) return
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        } catch (e: Exception) {
+            Log.e(TAG, "open url failed", e)
+            runCatching { Toast.makeText(this, "No app can open $url", Toast.LENGTH_LONG).show() }
         }
     }
 
@@ -377,6 +487,8 @@ class MainActivity : AppCompatActivity() {
         val watcher = object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                runCatching { updateHeroMetrics() }
+                runCatching { updateHeroSub() }
                 saveHandler.removeCallbacks(autosaveRunnable)
                 saveHandler.postDelayed(autosaveRunnable, 1200)
             }
@@ -385,122 +497,52 @@ class MainActivity : AppCompatActivity() {
         }
         etSsid.addTextChangedListener(watcher)
         etPass.addTextChangedListener(watcher)
-        etBand.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                saveHandler.removeCallbacks(autosaveRunnable)
-                saveHandler.postDelayed(autosaveRunnable, 1200)
-            }
-            override fun afterTextChanged(s: Editable?) {}
-        })
         etPort.addTextChangedListener(watcher)
         etHttpPort.addTextChangedListener(watcher)
         etKeepaliveUrl.addTextChangedListener(watcher)
         etKeepaliveInterval.addTextChangedListener(watcher)
     }
 
-    // Single real mode: Auto (SOCKS5 + HTTP together). The dropdown exists
-    // only to display it; proxyType is always 0. Old config.txt values
-    // (1/2/3) are still honored by the engine (see AppConfig.effectiveMode),
-    // out-of-range garbage is coerced to 0 at parse time.
-    private fun setupProxyTypeDropdown(selected: Int) {
-        val adapter = ArrayAdapter(
-            this,
-            android.R.layout.simple_dropdown_item_1line,
-            PROXY_TYPE_LABELS
-        )
-        etProxyType.setAdapter(adapter)
-        etProxyType.setText(PROXY_TYPE_LABELS[0], false)
-        runCatching {
-            etProxyType.setTextColor(ContextCompat.getColor(this, R.color.text_primary))
+    /**
+     * Segment/chip controls replace the old dropdowns: one selected tab, no
+     * popup to mis-anchor or close on the wrong tap.
+     */
+    private fun bindSegmentGroup(views: List<TextView>, selectedIndex: Int, onSelect: (Int) -> Unit) {
+        fun paint(index: Int) {
+            views.forEachIndexed { i, view -> view.isSelected = i == index }
         }
-        etProxyType.setOnItemClickListener { _, _, position, _ ->
-            runCatching {
-                etProxyType.setText(PROXY_TYPE_LABELS[position], false)
-                updatePortVisibility(0)
-                autosave()
+        paint(selectedIndex)
+        views.forEachIndexed { i, view ->
+            view.setOnClickListener {
+                if (view.isEnabled) {
+                    paint(i)
+                    onSelect(i)
+                }
             }
         }
     }
 
     /**
-     * When the band selector is disabled we hide the band dropdown entirely so
+     * When the band selector is disabled we hide the band segment entirely so
      * the user can't pick a band that won't be applied. The proxy then falls
      * back to the default band (see ProxyService).
      */
     private fun applyBandSelectorVisibility(disabled: Boolean) {
         runCatching {
-            tilBand.visibility = if (disabled) View.GONE else View.VISIBLE
-        }
-    }
-
-    private fun setupBandDropdown(selected: String) {
-        val adapter = ArrayAdapter(this, android.R.layout.simple_dropdown_item_1line, BAND_LABELS)
-        etBand.setAdapter(adapter)
-        val idx = BAND_VALUES.indexOf(selected).let { if (it < 0) 0 else it }
-        etBand.setText(BAND_LABELS[idx], false)
-        etBand.setOnItemClickListener { _, _, position, _ ->
-            runCatching {
-                etBand.setText(BAND_LABELS[position], false)
-                autosave()
-            }
-        }
-    }
-
-    /**
-     * Background update-check interval dropdown. Saving re-schedules (or
-     * cancels) the WorkManager job immediately via UpdateChecker.scheduleCheck
-     * - no proxy restart needed for this to take effect.
-     */
-    private fun setupUpdateIntervalDropdown(selectedHours: Int) {
-        val adapter = ArrayAdapter(this, android.R.layout.simple_dropdown_item_1line, UPDATE_INTERVAL_LABELS)
-        etUpdateCheckInterval.setAdapter(adapter)
-        val idx = UPDATE_INTERVAL_VALUES.indexOf(selectedHours).let { if (it < 0) 2 else it }
-        etUpdateCheckInterval.setText(UPDATE_INTERVAL_LABELS[idx], false)
-        etUpdateCheckInterval.setOnItemClickListener { _, _, position, _ ->
-            runCatching {
-                etUpdateCheckInterval.setText(UPDATE_INTERVAL_LABELS[position], false)
-                UpdateChecker.scheduleCheck(this, UPDATE_INTERVAL_VALUES[position])
-                autosave()
-            }
+            bandGroup.visibility = if (disabled) View.GONE else View.VISIBLE
         }
     }
 
     /**
      * Effective background update-check interval: 0 (disabled) when the toggle
-     * is off, otherwise the chosen frequency from the dropdown.
+     * is off, otherwise the selected chip.
      */
     private fun chosenUpdateIntervalHours(): Int {
         return try {
             if (!swAutoUpdate.isChecked) return 0
-            // Index into VALUES by label position; unknown text (or any slip)
-            // falls back to the default 6h entry (index 2) - never 0, so a
-            // parse hiccup can't silently disable background checks.
-            // (The old getOrElse default returned 2, a value that isn't even
-            // one of the 1/3/6/12/24 options.)
-            val idx = UPDATE_INTERVAL_LABELS.indexOf(etUpdateCheckInterval.text.toString())
-                .let { if (it < 0) 2 else it }
-            UPDATE_INTERVAL_VALUES.getOrElse(idx) { 6 }
+            UPDATE_INTERVAL_VALUES.getOrElse(selectedUpdateIdx) { 6 }
         } catch (_: Exception) {
             6
-        }
-    }
-
-    /**
-     * Port-field visibility. Always called with 0 (Auto = both ports) now that
-     * the mode picker is gone; the branches stay so a future mode needs no
-     * layout work.
-     */
-    private fun updatePortVisibility(proxyType: Int) {
-        runCatching {
-            val showSocks = proxyType != 2
-            val showHttp = proxyType == 0 || proxyType == 2 || proxyType == 3
-            tilPort.visibility = if (showSocks) View.VISIBLE else View.GONE
-            tilHttpPort.visibility = if (showHttp) View.VISIBLE else View.GONE
-            (tilPort.layoutParams as? LinearLayout.LayoutParams)?.weight =
-                if (showSocks && !showHttp) 2f else 1f
-            (tilHttpPort.layoutParams as? LinearLayout.LayoutParams)?.weight =
-                if (showHttp && !showSocks) 2f else 1f
         }
     }
 
@@ -608,17 +650,19 @@ class MainActivity : AppCompatActivity() {
         val ssid = etSsid.text.toString().trim()
         val port = etPort.text.toString().toIntOrNull()
         val httpPort = etHttpPort.text.toString().toIntOrNull()
-        // Single real mode (always 0 = Auto). The dropdown can't produce
-        // anything else; the engine still honors hand-edited 1/2/3.
+        // Single real mode (always 0 = Auto). The engine still honors
+        // hand-edited 1/2/3 in config.txt.
         val proxyType = 0
-        val band = BAND_VALUES.getOrElse(BAND_LABELS.indexOf(etBand.text.toString())) { "2.4" }
+        val band = BAND_VALUES.getOrElse(selectedBandIdx) { "2.4" }
         val updateCheckIntervalHours = chosenUpdateIntervalHours()
-        fun reject(msg: String): AppConfig? {
-            tvSaved.setTextColor(0xFFC62828.toInt())
-            tvSaved.text = msg
+        fun reject(msg: String, colorRes: Int = R.color.danger): AppConfig? {
+            setSavedMessage(msg, colorRes)
             return null
         }
-        if (pass.length !in 8..63) return reject("Password must be 8-63 characters - not saved yet")
+        if (pass.length !in 8..63) {
+            // Neutral, not an error: a fresh install simply has no password yet.
+            return reject("Set a Wi-Fi password (8-63 characters) to save settings.", R.color.text_muted)
+        }
         if (port == null || port < 1 || port > 65535) return reject("Invalid port - not saved yet")
         if (httpPort == null || httpPort < 1 || httpPort > 65535) return reject("Invalid HTTP port - not saved yet")
         // The visible fields must not collide with each other or with the
@@ -644,10 +688,10 @@ class MainActivity : AppCompatActivity() {
             httpPort = httpPort,
             keepaliveUrl = keepaliveUrl,
             keepaliveIntervalMs = (intervalSec ?: (prev.keepaliveIntervalMs / 1000)) * 1000L,
-            requireApprovalRestart = chkRequireApprovalRestart.isChecked,
-            disableBandSelector = chkDisableBandSelector.isChecked,
-            keepRetryingReform = chkKeepRetryingReform.isChecked,
-            autoRestartOnWifiReturn = chkAutoRestartOnWifiReturn.isChecked,
+            requireApprovalRestart = swRequireApproval.isChecked,
+            disableBandSelector = swDisableBand.isChecked,
+            keepRetryingReform = swKeepRetrying.isChecked,
+            autoRestartOnWifiReturn = swAutoRestart.isChecked,
             updateCheckIntervalHours = updateCheckIntervalHours
         )
     }
@@ -664,29 +708,31 @@ class MainActivity : AppCompatActivity() {
         }
         if (err != null) {
             Log.e(TAG, "autosave failed: $err")
-            tvSaved.setTextColor(0xFFC62828.toInt())
-            tvSaved.text = "Save failed: $err"
+            setSavedMessage("Save failed: $err", R.color.danger)
             return false
         }
-        tvSaved.setTextColor(0xFF2E7D32.toInt())
         val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-        tvSaved.text = "Saved to config.txt \u2713 $time"
+        setSavedMessage("Saved to config.txt \u2713 $time", R.color.saved_ok)
         return true
     }
 
     private fun autosave() {
         try {
             val copy = buildSaveCopy() ?: return
-            tvSaved.setTextColor(0xFFB8A99F.toInt())
-            tvSaved.text = "Saving..."
+            setSavedMessage("Saving...", R.color.text_dim)
             lifecycleScope.launch { persistCopy(copy) }
         } catch (e: Exception) {
             Log.e(TAG, "autosave failed", e)
             runCatching {
-                tvSaved.setTextColor(0xFFC62828.toInt())
-                tvSaved.text = "Save failed: ${e.message}"
+                setSavedMessage("Save failed: ${e.message}", R.color.danger)
             }
         }
+    }
+
+    private fun setSavedMessage(text: String, colorRes: Int) {
+        val color = ContextCompat.getColor(this, colorRes)
+        tvSaved.setTextColor(color)
+        tvSaved.text = text
     }
 
     // Ports the running proxy actually bound (snapshotted at start). The
@@ -696,30 +742,121 @@ class MainActivity : AppCompatActivity() {
     private var snapshotSocksPort = ""
     private var snapshotHttpPort = ""
 
+    private fun updateHeroMetrics() {
+        tvSocksPort.text = snapshotSocksPort.ifEmpty { etPort.text.toString().ifEmpty { "1080" } }
+        tvHttpPort.text = snapshotHttpPort.ifEmpty { etHttpPort.text.toString().ifEmpty { "8282" } }
+    }
+
+    /** Keeps the one-line prompt in sync while the user edits the password. */
+    private fun updateHeroSub() {
+        if (AppState.running.value) return
+        tvHeroSub.text = if (etPass.text.length !in 8..63) {
+            "Set a Wi-Fi password (8-63 characters) to start the hotspot."
+        } else {
+            "Start Ejao to create a private hotspot and route your PC's traffic."
+        }
+    }
+
     private fun renderRunning(running: Boolean) {
         runCatching {
-            btnToggle.text = if (running) "STOP PROXY" else "START PROXY"
-            statusDot.setBackgroundResource(if (running) R.drawable.status_dot_running else R.drawable.status_dot_stopped)
-            statusCard.setBackgroundResource(if (running) R.drawable.bg_status_running else R.drawable.bg_status)
+            val previous = lastRunning
+            lastRunning = running
             if (running) {
-                // Capture what the proxy is about to boot on (persistCopy in
-                // startSelectedProxy already validated + saved these).
-                snapshotSocksPort = etPort.text.toString().ifEmpty { "1080" }
-                snapshotHttpPort = etHttpPort.text.toString().ifEmpty { "8282" }
+                if (snapshotSocksPort.isEmpty()) snapshotSocksPort = etPort.text.toString().ifEmpty { "1080" }
+                if (snapshotHttpPort.isEmpty()) snapshotHttpPort = etHttpPort.text.toString().ifEmpty { "8282" }
             } else {
                 snapshotSocksPort = ""
                 snapshotHttpPort = ""
             }
+
+            tvAppStatus.text = if (running) "LIVE" else "OFFLINE"
+            tvAppStatus.setTextColor(
+                ContextCompat.getColor(this, if (running) R.color.status_pill_on_text else R.color.status_pill_off_text)
+            )
+            appStatusDot.setBackgroundResource(if (running) R.drawable.dot_mint else R.drawable.dot_off)
+
+            tvStatus.text = if (running) "RUNNING" else "STOPPED"
+            tvStatus.setTextColor(
+                ContextCompat.getColor(this, if (running) R.color.accent_text else R.color.text_primary)
+            )
+            statusDot.setBackgroundResource(if (running) R.drawable.status_dot_running else R.drawable.status_dot_stopped)
+            setLamp(running)
+            tvHeroSub.text = when {
+                running -> "Hotspot is up. Point clients at the endpoints below."
+                etPass.text.length !in 8..63 -> "Set a Wi-Fi password (8-63 characters) to start the hotspot."
+                else -> "Start Ejao to create a private hotspot and route your PC's traffic."
+            }
+
+            btnToggle.text = if (running) "STOP PROXY" else "START PROXY"
+            btnToggle.setBackgroundResource(if (running) R.drawable.bg_cta_stop else R.drawable.bg_cta_start)
+            val ctaColor = ContextCompat.getColor(this, if (running) R.color.cta_stop_text else R.color.on_primary)
+            btnToggle.setTextColor(ctaColor)
+
+            when {
+                previous == null -> if (running) showConnection(false) else hideConnection(false)
+                previous != running -> if (running) showConnection(true) else hideConnection(true)
+            }
+            if (!running) {
+                tvClients.text = "0"
+                tvClients.setTextColor(ContextCompat.getColor(this, R.color.text_primary))
+            }
+            updateHeroMetrics()
         }
+    }
+
+    /** Amber signal lamp: steady when stopped, slow pulse while live. */
+    private fun setLamp(running: Boolean) {
+        lampAnimator?.cancel()
+        lampAnimator = null
+        if (!running) {
+            statusHalo.alpha = 0f
+            return
+        }
+        lampAnimator = ObjectAnimator.ofFloat(statusHalo, View.ALPHA, 0.9f, 0.15f).apply {
+            duration = 1500L
+            repeatCount = ObjectAnimator.INFINITE
+            repeatMode = ObjectAnimator.REVERSE
+            start()
+        }
+    }
+
+    private fun showConnection(animate: Boolean) {
+        connectionSection.animate().cancel()
+        connectionSection.visibility = View.VISIBLE
+        if (!animate) {
+            connectionSection.alpha = 1f
+            connectionSection.translationY = 0f
+            return
+        }
+        connectionSection.alpha = 0f
+        connectionSection.translationY = 12f
+        connectionSection.animate().alpha(1f).translationY(0f).setDuration(240).start()
+    }
+
+    private fun hideConnection(animate: Boolean) {
+        connectionSection.animate().cancel()
+        if (!animate) {
+            connectionSection.visibility = View.GONE
+            connectionSection.alpha = 1f
+            connectionSection.translationY = 0f
+            return
+        }
+        connectionSection.animate().alpha(0f).translationY(8f).setDuration(140)
+            .withEndAction {
+                connectionSection.visibility = View.GONE
+                connectionSection.alpha = 1f
+                connectionSection.translationY = 0f
+            }.start()
     }
 
     private fun renderInfo(info: ApInfo) {
         runCatching {
-            if (info.ssid.isEmpty()) {
-                tvInfo.text = "--"
-                tvPanelUrl.text = ""
-                return
-            }
+            if (!AppState.running.value) return
+            tvClients.text = info.clients.toString()
+            tvClients.setTextColor(
+                ContextCompat.getColor(this, if (info.clients > 0) R.color.accent_text else R.color.text_primary)
+            )
+            if (info.ssid.isEmpty()) return
             // Prefer the start-time snapshot; fall back to live fields (e.g.
             // service auto-resumed after update without this Activity).
             val socksPort = snapshotSocksPort.ifEmpty {
@@ -728,20 +865,24 @@ class MainActivity : AppCompatActivity() {
             val httpPort = snapshotHttpPort.ifEmpty {
                 runCatching { etHttpPort.text.ifEmpty { "8282" }.toString() }.getOrDefault("8282")
             }
-            val infoLines = mutableListOf(
-                "SSID:      ${info.ssid}",
-                "Password:  ${info.passphrase}",
-                "SOCKS5:    ${info.goIp}:$socksPort",
-                "HTTP:      ${info.goIp}:$httpPort"
-            )
-            if (info.panelPort > 0) infoLines.add("Panel:     http://${info.goIp}:${info.panelPort}/")
-            if (info.backupPanelPort > 0) infoLines.add("Backup:    http://${info.goIp}:${info.backupPanelPort}/ (own service, use if proxy down)")
-            infoLines.add("Clients:   ${info.clients}")
-            tvInfo.text = infoLines.joinToString("\n")
-            tvPanelUrl.text = buildString {
-                if (info.panelPort > 0) append("Control panel runs on its own port:\nhttp://${info.goIp}:${info.panelPort}/\n")
-                if (info.backupPanelPort > 0) append("Backup panel (own service, stays up if proxy dies):\nhttp://${info.goIp}:${info.backupPanelPort}/")
-            }.trim().ifEmpty { "" }
+            tvSocksPort.text = socksPort
+            tvHttpPort.text = httpPort
+            copySocksText = "${info.goIp}:$socksPort"
+            copyHttpText = "${info.goIp}:$httpPort"
+            tvSocksEndpoint.text = copySocksText
+            tvHttpEndpoint.text = copyHttpText
+
+            val panelUrl = if (info.panelPort > 0) "http://${info.goIp}:${info.panelPort}/" else ""
+            copyPanelUrl = panelUrl
+            tvPanelEndpoint.text = panelUrl.ifEmpty { "\u2014" }
+            rowPanel.visibility = if (panelUrl.isEmpty()) View.GONE else View.VISIBLE
+            dividerPanel.visibility = rowPanel.visibility
+
+            val backupUrl = if (info.backupPanelPort > 0) "http://${info.goIp}:${info.backupPanelPort}/" else ""
+            copyBackupUrl = backupUrl
+            tvBackupEndpoint.text = backupUrl.ifEmpty { "\u2014" }
+            rowBackup.visibility = if (backupUrl.isEmpty()) View.GONE else View.VISIBLE
+            dividerBackup.visibility = rowBackup.visibility
         }
     }
 
@@ -751,14 +892,12 @@ class MainActivity : AppCompatActivity() {
             Log.i(TAG, "START clicked - passLen=${pass.length}")
             if (pass.length < 8 || pass.length > 63) {
                 Log.w(TAG, "password invalid -> refusing to start")
-                tvStatus.text = "ERROR: set a WiFi password (8-63 chars) first"
+                tvHeroSub.text = "Set a Wi-Fi password (8-63 characters) before starting."
                 runCatching {
                     Toast.makeText(this, "Set a WiFi password (8-63 chars) before starting", Toast.LENGTH_LONG).show()
                 }
                 return
             }
-            val idx = PROXY_TYPE_LABELS.indexOf(etProxyType.text.toString()).let { if (it < 0) 0 else it }
-            runCatching { etProxyType.setText(PROXY_TYPE_LABELS[idx], false) }
             // Persist first and only start on success: autosave is async now,
             // so starting immediately would boot the proxy on stale config
             // (e.g. edited port not yet written).
@@ -781,7 +920,7 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             Log.e(TAG, "start selected proxy failed", e)
             runCatching {
-                tvStatus.text = "ERROR: couldn't start (${e.message})"
+                tvHeroSub.text = "Couldn't start: ${e.message}"
                 Toast.makeText(this, "Couldn't start proxy: ${e.message}", Toast.LENGTH_LONG).show()
             }
         }
@@ -828,7 +967,7 @@ class MainActivity : AppCompatActivity() {
             Log.e(TAG, "startForegroundService failed", e)
             AppState.running.value = false
             runCatching {
-                tvStatus.text = "ERROR: couldn't start service (${e.message})"
+                tvHeroSub.text = "Couldn't start service (${e.message})"
                 Toast.makeText(this, "Couldn't start proxy service: ${e.message}", Toast.LENGTH_LONG).show()
             }
         }
@@ -937,127 +1076,23 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun refreshGuardStatus() {
-        runCatching {
-            if (::tvGuardStatus.isInitialized) tvGuardStatus.text = WifiGuard.statusLine(this)
-        }
-    }
-
     /**
-     * AprilFool ADB WiFi guard card: copy the one-liner for the PC, or drop a
-     * request file the shell-side daemon picks up within ~30s. Read-only when
-     * the daemon was never started (status line says so).
+     * OEM autostart managers move between ROMs and several of the old
+     * hard-coded component names opened unrelated screens. The app's own
+     * system page exists on every device; autostart is one tap from there.
      */
-    private fun setupWifiGuard() {
-        tvGuardStatus = findViewById(R.id.tvGuardStatus)
-        etGuardInterval = findViewById(R.id.etGuardInterval)
-        etGuardUnit = findViewById(R.id.etGuardUnit)
-        refreshGuardStatus()
-        setupGuardIntervalPicker()
-        findViewById<Button>(R.id.btnGuardCopy).setOnClickListener {
-            runCatching {
-                val cmd = WifiGuard.adbCommand(this, chosenGuardIntervalSec())
-                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                cm.setPrimaryClip(ClipData.newPlainText("ejao-guard", cmd))
-                Toast.makeText(this, "Guard command copied - paste it on a PC with USB debugging", Toast.LENGTH_LONG).show()
-            }.onFailure { e ->
-                Log.e(TAG, "guard copy failed", e)
-            }
-        }
-        findViewById<Button>(R.id.btnGuardRequest).setOnClickListener {
-            runCatching {
-                if (WifiGuard.requestWifiOn(this)) {
-                    Toast.makeText(this, "Requested - guard picks it up within ~30s", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(this, "Couldn't write the request file", Toast.LENGTH_LONG).show()
-                }
-                refreshGuardStatus()
-            }.onFailure { e ->
-                Log.e(TAG, "guard request failed", e)
-            }
-        }
-        findViewById<Button>(R.id.btnGuardStop).setOnClickListener {
-            runCatching {
-                if (WifiGuard.stopGuard(this)) {
-                    Toast.makeText(this, "Stop requested - guard exits within ~30s", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(this, "Couldn't write the stop file", Toast.LENGTH_LONG).show()
-                }
-                refreshGuardStatus()
-            }.onFailure { e ->
-                Log.e(TAG, "guard stop failed", e)
-            }
-        }
-    }
-
-    /**
-     * Guard interval picker: number + unit, saved as seconds in prefs. Only
-     * feeds the next copied ADB command - a running daemon keeps its own
-     * interval until re-started (its cadence shows in the status line).
-     */
-    private fun setupGuardIntervalPicker() {
-        val adapter = ArrayAdapter(this, android.R.layout.simple_dropdown_item_1line, GUARD_UNIT_LABELS)
-        etGuardUnit.setAdapter(adapter)
-        val saved = WifiGuard.intervalSec(this)
-        val unitIdx = when {
-            saved % 3600L == 0L -> 2
-            saved % 60L == 0L -> 1
-            else -> 0
-        }
-        etGuardUnit.setText(GUARD_UNIT_LABELS[unitIdx], false)
-        etGuardInterval.setText((saved / GUARD_UNIT_MULTS[unitIdx]).toString())
-        etGuardUnit.setOnItemClickListener { _, _, position, _ ->
-            runCatching {
-                etGuardUnit.setText(GUARD_UNIT_LABELS[position], false)
-                saveGuardInterval()
-            }
-        }
-        etGuardInterval.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                runCatching { saveGuardInterval() }
-            }
-            override fun afterTextChanged(s: Editable?) {}
-        })
-    }
-
-    private fun chosenGuardIntervalSec(): Long {
-        return try {
-            val n = etGuardInterval.text.toString().toLongOrNull()
-                ?: return WifiGuard.intervalSec(this)
-            val mult = GUARD_UNIT_MULTS.getOrElse(GUARD_UNIT_LABELS.indexOf(etGuardUnit.text.toString())) { 60L }
-            (n * mult).coerceAtLeast(WifiGuard.MIN_INTERVAL_SEC)
-        } catch (_: Exception) {
-            WifiGuard.intervalSec(this)
-        }
-    }
-
-    private fun saveGuardInterval() {
-        // chosenGuardIntervalSec falls back to the saved value on bad input,
-        // so a half-typed number can never corrupt the pref.
-        WifiGuard.setIntervalSec(this, chosenGuardIntervalSec())
-    }
-
     private fun openAutostartSettings() {
         try {
-            val intents = listOf(
-                Intent().setClassName("com.hihonor.systemmanager", "com.hihonor.systemmanager.startupmgr.ui.StartupNormalAppListActivity"),
-                Intent().setClassName("com.huawei.systemmanager", "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"),
-                Intent().setClassName("com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity"),
-                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
+            startActivity(
+                Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:$packageName")
+                )
             )
-            for (i in intents) {
-                try {
-                    startActivity(i)
-                    return
-                } catch (_: Exception) {
-                }
-            }
-            Toast.makeText(this, "Open Settings > Apps > Ejao and enable Autostart", Toast.LENGTH_LONG).show()
         } catch (e: Exception) {
-            Log.e(TAG, "open autostart failed", e)
+            Log.e(TAG, "open app settings failed", e)
             runCatching {
-                Toast.makeText(this, "Couldn't open settings on this device", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Open Settings > Apps > Ejao and allow autostart", Toast.LENGTH_LONG).show()
             }
         }
     }

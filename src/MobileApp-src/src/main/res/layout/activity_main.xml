@@ -1,834 +1,1259 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@android:color/transparent">
-
-    <com.ejao.proxy.SwipeScrollView
-        android:id="@+id/mainScroll"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:background="@android:color/transparent"
-        android:clipToPadding="false"
-        android:fillViewport="true">
+    android:background="@drawable/bg_screen">
 
     <LinearLayout
+        android:id="@+id/appShell"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:paddingBottom="100dp">
+        android:layout_height="match_parent"
+        android:orientation="vertical">
 
-        <!-- ============ TAB 1: PROXY ============ -->
+        <!-- ============ APP BAR ============ -->
         <LinearLayout
-            android:id="@+id/tabProxy"
+            android:id="@+id/appBar"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:padding="16dp">
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="20dp"
+            android:paddingTop="10dp"
+            android:paddingEnd="20dp"
+            android:paddingBottom="14dp">
 
             <LinearLayout
-                android:id="@+id/statusCard"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="sans-serif-medium"
+                    android:letterSpacing="-0.01"
+                    android:text="Ejao"
+                    android:textColor="@color/text_primary"
+                    android:textSize="20sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:fontFamily="monospace"
+                    android:letterSpacing="0.16"
+                    android:text="WI-FI DIRECT PROXY"
+                    android:textColor="@color/text_muted"
+                    android:textSize="8.5sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/appStatusPill"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <View
+                    android:id="@+id/appStatusDot"
+                    android:layout_width="6dp"
+                    android:layout_height="6dp"
+                    android:background="@drawable/dot_off" />
+
+                <TextView
+                    android:id="@+id/tvAppStatus"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="7dp"
+                    android:fontFamily="monospace"
+                    android:letterSpacing="0.16"
+                    android:text="OFFLINE"
+                    android:textColor="@color/status_pill_off_text"
+                    android:textSize="9.5sp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginStart="20dp"
+            android:layout_marginEnd="20dp"
+            android:background="@color/divider" />
+
+        <ScrollView
+            android:id="@+id/mainScroll"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:clipToPadding="false"
+            android:fillViewport="true"
+            android:scrollbars="none">
+
+            <LinearLayout
+                android:id="@+id/scrollContent"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:background="@drawable/bg_status"
                 android:orientation="vertical"
-                android:padding="16dp">
+                android:paddingStart="20dp"
+                android:paddingTop="6dp"
+                android:paddingEnd="20dp"
+                android:paddingBottom="40dp">
+
+                <!-- ============ STATUS ============ -->
+                <TextView
+                    style="@style/Text.Ejao.Eyebrow"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:text="Proxy engine" />
 
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
                     android:gravity="center_vertical"
                     android:orientation="horizontal">
 
-                    <View
-                        android:id="@+id/statusDot"
-                        android:layout_width="10dp"
-                        android:layout_height="10dp"
-                        android:layout_marginEnd="10dp"
-                        android:background="@drawable/status_dot_stopped" />
+                    <FrameLayout
+                        android:layout_width="28dp"
+                        android:layout_height="28dp">
+
+                        <View
+                            android:id="@+id/statusHalo"
+                            android:layout_width="24dp"
+                            android:layout_height="24dp"
+                            android:layout_gravity="center"
+                            android:alpha="0"
+                            android:background="@drawable/halo_amber" />
+
+                        <View
+                            android:id="@+id/statusDot"
+                            android:layout_width="9dp"
+                            android:layout_height="9dp"
+                            android:layout_gravity="center"
+                            android:background="@drawable/status_dot_stopped" />
+                    </FrameLayout>
 
                     <TextView
                         android:id="@+id/tvStatus"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="Stopped"
-                        android:textColor="@color/text_primary"
-                        android:textIsSelectable="true"
-                        android:textSize="16sp"
-                        android:textStyle="bold" />
-                </LinearLayout>
-
-                <TextView
-                    android:id="@+id/tvInfo"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
-                    android:fontFamily="monospace"
-                    android:text="--"
-                    android:textColor="@color/text_secondary"
-                    android:textIsSelectable="true"
-                    android:textSize="13sp" />
-            </LinearLayout>
-
-            <Button
-                android:id="@+id/btnToggle"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
-                android:background="@drawable/bg_button_primary"
-                android:fontFamily="sans-serif-medium"
-                android:minHeight="56dp"
-                android:padding="16dp"
-                android:text="START PROXY"
-                android:textAllCaps="false"
-                android:textColor="@color/on_primary"
-                android:textSize="16sp"
-                android:textStyle="bold"
-                app:backgroundTint="@null" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="24dp"
-                android:layout_marginBottom="12dp"
-                android:drawableStart="@drawable/ic_wifi"
-                android:drawablePadding="10dp"
-                android:letterSpacing="0.06"
-                android:text="WI-FI DIRECT"
-                android:textColor="@color/text_secondary"
-                android:textSize="13sp"
-                android:textStyle="bold" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:background="@drawable/bg_card"
-                android:orientation="vertical"
-                android:padding="14dp">
-
-                <com.google.android.material.textfield.TextInputLayout
-                    android:id="@+id/tilSsid"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:hint="SSID">
-
-                    <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/etSsid"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:inputType="text" />
-                </com.google.android.material.textfield.TextInputLayout>
-
-                <com.google.android.material.textfield.TextInputLayout
-                    android:id="@+id/tilPass"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
-                    android:hint="WiFi Password (8-63 chars, shown for clients to see)">
-
-                    <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/etPass"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:inputType="text"
-                        android:textIsSelectable="true" />
-                </com.google.android.material.textfield.TextInputLayout>
-
-                <com.google.android.material.textfield.TextInputLayout
-                    android:id="@+id/tilBand"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
-                    android:hint="WiFi Band"
-                    style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox.ExposedDropdownMenu">
-
-                    <AutoCompleteTextView
-                        android:id="@+id/etBand"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:clickable="true"
-                        android:focusable="false"
-                        android:inputType="none" />
-                </com.google.android.material.textfield.TextInputLayout>
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="6dp"
-                    android:layout_marginBottom="6dp"
-                    android:text="2.4 GHz = range + compatibility. 5 GHz = speed. Auto = phone decides."
-                    android:textColor="@color/text_secondary"
-                    android:textSize="12sp" />
-
-                <com.google.android.material.textfield.TextInputLayout
-                    android:id="@+id/tilProxyType"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
-                    android:hint="Proxy Type"
-                    style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox.ExposedDropdownMenu">
-
-                    <AutoCompleteTextView
-                        android:id="@+id/etProxyType"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:clickable="true"
-                        android:focusable="false"
-                        android:inputType="none" />
-                </com.google.android.material.textfield.TextInputLayout>
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="6dp"
-                    android:layout_marginBottom="6dp"
-                    android:text="Auto runs SOCKS5 + HTTP together."
-                    android:textColor="@color/text_secondary"
-                    android:textSize="12sp" />
-
-                <LinearLayout
-                    android:id="@+id/portRow"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
-                    android:orientation="horizontal"
-                    android:weightSum="2">
-
-                    <com.google.android.material.textfield.TextInputLayout
-                        android:id="@+id/tilPort"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_marginEnd="6dp"
-                        android:layout_weight="1"
-                        android:hint="SOCKS5 Port">
-
-                        <com.google.android.material.textfield.TextInputEditText
-                            android:id="@+id/etPort"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:inputType="number" />
-                    </com.google.android.material.textfield.TextInputLayout>
-
-                    <com.google.android.material.textfield.TextInputLayout
-                        android:id="@+id/tilHttpPort"
-                        android:layout_width="0dp"
+                        style="@style/Text.Ejao.Display"
+                        android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginStart="6dp"
-                        android:layout_weight="1"
-                        android:hint="HTTP Port">
-
-                        <com.google.android.material.textfield.TextInputEditText
-                            android:id="@+id/etHttpPort"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:inputType="number" />
-                    </com.google.android.material.textfield.TextInputLayout>
+                        android:text="STOPPED" />
                 </LinearLayout>
 
                 <TextView
+                    android:id="@+id/tvHeroSub"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="8dp"
-                    android:text="Shown per mode. Hybrid shows both."
-                    android:textColor="@color/text_secondary"
-                    android:textIsSelectable="true"
-                    android:textSize="12sp" />
-            </LinearLayout>
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="24dp"
-                android:layout_marginBottom="12dp"
-                android:drawableStart="@drawable/ic_server"
-                android:drawablePadding="10dp"
-                android:letterSpacing="0.06"
-                android:text="ENDPOINTS"
-                android:textColor="@color/text_secondary"
-                android:textSize="13sp"
-                android:textStyle="bold" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:background="@drawable/bg_card"
-                android:orientation="vertical"
-                android:padding="14dp">
+                    android:lineSpacingExtra="2dp"
+                    android:maxLines="3"
+                    android:text="Start Ejao to create a private hotspot and route your PC's traffic."
+                    android:textColor="@color/hero_sub"
+                    android:textSize="13sp" />
 
                 <TextView
-                    android:id="@+id/tvPanelUrl"
+                    android:id="@+id/tvStatusDetail"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:textColor="@color/text_secondary"
-                    android:textIsSelectable="true"
-                    android:textSize="12sp" />
-            </LinearLayout>
-
-            <TextView
-                android:id="@+id/tvSaved"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
-                android:text="Auto-saved to config.txt"
-                android:textColor="@color/text_secondary"
-                android:textSize="13sp" />
-
-            <TextView
-                android:id="@+id/tvConfigPath"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
-                android:textColor="@color/text_secondary"
-                android:textIsSelectable="true"
-                android:textSize="12sp" />
-
-        </LinearLayout>
-
-        <!-- ============ TAB 2: KEEP-ALIVE ============ -->
-        <LinearLayout
-            android:id="@+id/tabKeepalive"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:padding="16dp"
-            android:visibility="gone">
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="24dp"
-                android:layout_marginBottom="12dp"
-                android:drawableStart="@drawable/ic_clock"
-                android:drawablePadding="10dp"
-                android:letterSpacing="0.06"
-                android:text="APP UPDATE"
-                android:textColor="@color/text_secondary"
-                android:textSize="13sp"
-                android:textStyle="bold" />
-
-            <Button
-                android:id="@+id/btnCheckUpdate"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
-                android:background="@drawable/bg_button_secondary"
-                android:fontFamily="sans-serif-medium"
-                android:minHeight="56dp"
-                android:padding="16dp"
-                android:text="CHECK FOR UPDATES"
-                android:textAllCaps="false"
-                android:textColor="@color/text_primary"
-                android:textSize="16sp"
-                android:textStyle="bold"
-                app:backgroundTint="@null" />
-
-            <TextView
-                android:id="@+id/tvUpdateStatus"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:textColor="@color/text_secondary"
-                android:textSize="13sp" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:background="@drawable/bg_card"
-                android:orientation="vertical"
-                android:padding="14dp">
+                    android:layout_marginTop="5dp"
+                    android:textColor="@color/text_muted"
+                    android:textSize="11sp"
+                    android:visibility="gone" />
 
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:gravity="center_vertical"
+                    android:layout_marginTop="20dp"
                     android:orientation="horizontal">
 
                     <LinearLayout
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
                         android:layout_weight="1"
-                        android:orientation="vertical"
-                        android:paddingEnd="12dp">
+                        android:orientation="vertical">
 
                         <TextView
+                            style="@style/Text.Ejao.MetricLabel"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="Background update check"
-                            android:textColor="@color/text_primary"
-                            android:textSize="15sp"
-                            android:textStyle="bold" />
+                            android:text="Clients" />
 
                         <TextView
+                            android:id="@+id/tvClients"
+                            style="@style/Text.Ejao.MetricValue"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:layout_marginTop="3dp"
-                            android:text="Silently downloads new releases"
-                            android:textColor="@color/text_secondary"
-                            android:textSize="13sp" />
+                            android:layout_marginTop="4dp"
+                            android:text="0" />
                     </LinearLayout>
 
-                    <com.google.android.material.switchmaterial.SwitchMaterial
-                        android:id="@+id/swAutoUpdate"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content" />
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            style="@style/Text.Ejao.MetricLabel"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="SOCKS5" />
+
+                        <TextView
+                            android:id="@+id/tvSocksPort"
+                            style="@style/Text.Ejao.MetricValue"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:text="1080" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            style="@style/Text.Ejao.MetricLabel"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="HTTP" />
+
+                        <TextView
+                            android:id="@+id/tvHttpPort"
+                            style="@style/Text.Ejao.MetricValue"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:text="8282" />
+                    </LinearLayout>
                 </LinearLayout>
 
-                <com.google.android.material.textfield.TextInputLayout
-                    android:id="@+id/tilUpdateCheckInterval"
+                <FrameLayout
                     android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="16dp"
-                    android:hint="Check frequency"
-                    style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox.ExposedDropdownMenu">
+                    android:layout_height="56dp"
+                    android:layout_marginTop="18dp">
 
-                    <AutoCompleteTextView
-                        android:id="@+id/etUpdateCheckInterval"
+                    <View
                         android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
+                        android:layout_height="64dp"
+                        android:layout_gravity="center"
+                        android:background="@drawable/cta_glow" />
+
+                    <TextView
+                        android:id="@+id/btnToggle"
+                        style="@style/Text.Ejao.Cta"
+                        android:layout_width="match_parent"
+                        android:layout_height="52dp"
+                        android:layout_gravity="center"
+                        android:background="@drawable/bg_cta_start"
                         android:clickable="true"
-                        android:focusable="false"
-                        android:inputType="none" />
-                </com.google.android.material.textfield.TextInputLayout>
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:text="START PROXY"
+                        android:textColor="@color/on_primary" />
+                </FrameLayout>
 
                 <TextView
+                    android:id="@+id/tvSaved"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="10dp"
-                    android:text="How often Ejao checks GitHub. Off saves metered data."
-                    android:textColor="@color/text_secondary"
-                    android:textSize="12sp" />
-            </LinearLayout>
+                    android:gravity="center"
+                    android:text="Settings save automatically"
+                    android:textColor="@color/saved_text"
+                    android:textSize="10.5sp" />
 
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="24dp"
-                android:layout_marginBottom="12dp"
-                android:drawableStart="@drawable/ic_shield"
-                android:drawablePadding="10dp"
-                android:letterSpacing="0.06"
-                android:text="KEEP EJAO ALIVE"
-                android:textColor="@color/text_secondary"
-                android:textSize="13sp"
-                android:textStyle="bold" />
-
-            <Button
-                android:id="@+id/btnBattery"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="16dp"
-                android:background="@drawable/bg_button_secondary"
-                android:fontFamily="sans-serif-medium"
-                android:minHeight="56dp"
-                android:padding="16dp"
-                android:text="REQUEST BATTERY EXEMPTION"
-                android:textAllCaps="false"
-                android:textColor="@color/text_primary"
-                android:textSize="16sp"
-                android:textStyle="bold"
-                app:backgroundTint="@null" />
-
-            <Button
-                android:id="@+id/btnAutostart"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:background="@drawable/bg_button_secondary"
-                android:fontFamily="sans-serif-medium"
-                android:minHeight="56dp"
-                android:padding="16dp"
-                android:text="AUTOSTART SETTINGS"
-                android:textAllCaps="false"
-                android:textColor="@color/text_primary"
-                android:textSize="16sp"
-                android:textStyle="bold"
-                app:backgroundTint="@null" />
-
-            <Button
-                android:id="@+id/btnWiki"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:background="@drawable/bg_button_secondary"
-                android:fontFamily="sans-serif-medium"
-                android:minHeight="56dp"
-                android:padding="16dp"
-                android:text="OPEN SETUP GUIDE (WIKI)"
-                android:textAllCaps="false"
-                android:textColor="@color/text_primary"
-                android:textSize="16sp"
-                android:textStyle="bold"
-                app:backgroundTint="@null" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="24dp"
-                android:layout_marginBottom="12dp"
-                android:drawableStart="@drawable/ic_pulse"
-                android:drawablePadding="10dp"
-                android:letterSpacing="0.06"
-                android:text="NETWORK KEEP-ALIVE PING"
-                android:textColor="@color/text_secondary"
-                android:textSize="13sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:layout_marginBottom="6dp"
-                android:text="Periodic pings keep the OS from killing the proxy. Applies on restart."
-                android:textColor="@color/text_secondary"
-                android:textSize="13sp" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:background="@drawable/bg_card"
-                android:orientation="vertical"
-                android:padding="16dp">
-
-                <com.google.android.material.textfield.TextInputLayout
-                    android:id="@+id/tilKeepaliveUrl"
+                <!-- ============ CONNECTION ============ -->
+                <LinearLayout
+                    android:id="@+id/connectionSection"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:hint="Keep-Alive URL (pre-listed site)">
+                    android:orientation="vertical"
+                    android:visibility="gone">
 
-                    <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/etKeepaliveUrl"
+                    <TextView
+                        style="@style/Text.Ejao.SectionTitle"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="26dp"
+                        android:text="Connection" />
+
+                    <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:inputType="textUri" />
-                </com.google.android.material.textfield.TextInputLayout>
+                        android:layout_marginTop="4dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal"
+                        android:paddingTop="11dp"
+                        android:paddingBottom="12dp">
 
-                <com.google.android.material.textfield.TextInputLayout
-                    android:id="@+id/tilKeepaliveInterval"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
-                    android:hint="Ping interval (seconds, min 15)">
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:orientation="vertical">
 
-                    <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/etKeepaliveInterval"
+                            <TextView
+                                style="@style/Text.Ejao.FieldLabel"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="SOCKS5 · TCP + UDP" />
+
+                            <TextView
+                                android:id="@+id/tvSocksEndpoint"
+                                style="@style/Text.Ejao.EndpointValue"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="3dp"
+                                android:text="—" />
+                        </LinearLayout>
+
+                        <ImageButton
+                            android:id="@+id/btnCopySocks"
+                            android:layout_width="34dp"
+                            android:layout_height="34dp"
+                            android:background="?attr/selectableItemBackgroundBorderless"
+                            android:contentDescription="Copy SOCKS5 endpoint"
+                            android:padding="8dp"
+                            android:scaleType="fitCenter"
+                            android:src="@drawable/ic_copy"
+                            android:tint="@color/action_icon" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:background="@color/divider" />
+
+                    <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:inputType="number" />
-                </com.google.android.material.textfield.TextInputLayout>
-            </LinearLayout>
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal"
+                        android:paddingTop="11dp"
+                        android:paddingBottom="12dp">
 
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="24dp"
-                android:layout_marginBottom="12dp"
-                android:drawableStart="@drawable/ic_server"
-                android:drawablePadding="10dp"
-                android:letterSpacing="0.06"
-                android:text="CONTROL PANEL"
-                android:textColor="@color/text_secondary"
-                android:textSize="13sp"
-                android:textStyle="bold" />
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:orientation="vertical">
 
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:background="@drawable/bg_card"
-                android:orientation="vertical"
-                android:padding="16dp">
+                            <TextView
+                                style="@style/Text.Ejao.FieldLabel"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="HTTP proxy" />
 
-                <CheckBox
-                    android:id="@+id/chkRequireApprovalRestart"
+                            <TextView
+                                android:id="@+id/tvHttpEndpoint"
+                                style="@style/Text.Ejao.EndpointValue"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="3dp"
+                                android:text="—" />
+                        </LinearLayout>
+
+                        <ImageButton
+                            android:id="@+id/btnCopyHttp"
+                            android:layout_width="34dp"
+                            android:layout_height="34dp"
+                            android:background="?attr/selectableItemBackgroundBorderless"
+                            android:contentDescription="Copy HTTP endpoint"
+                            android:padding="8dp"
+                            android:scaleType="fitCenter"
+                            android:src="@drawable/ic_copy"
+                            android:tint="@color/action_icon" />
+                    </LinearLayout>
+
+                    <View
+                        android:id="@+id/dividerPanel"
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:background="@color/divider" />
+
+                    <LinearLayout
+                        android:id="@+id/rowPanel"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal"
+                        android:paddingTop="11dp"
+                        android:paddingBottom="12dp">
+
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:orientation="vertical">
+
+                            <TextView
+                                style="@style/Text.Ejao.FieldLabel"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Control panel" />
+
+                            <TextView
+                                android:id="@+id/tvPanelEndpoint"
+                                style="@style/Text.Ejao.EndpointValue"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="3dp"
+                                android:text="—" />
+                        </LinearLayout>
+
+                        <ImageButton
+                            android:id="@+id/btnCopyPanel"
+                            android:layout_width="34dp"
+                            android:layout_height="34dp"
+                            android:background="?attr/selectableItemBackgroundBorderless"
+                            android:contentDescription="Copy control panel URL"
+                            android:padding="8dp"
+                            android:scaleType="fitCenter"
+                            android:src="@drawable/ic_copy"
+                            android:tint="@color/action_icon" />
+
+                        <ImageButton
+                            android:id="@+id/btnOpenPanel"
+                            android:layout_width="34dp"
+                            android:layout_height="34dp"
+                            android:background="?attr/selectableItemBackgroundBorderless"
+                            android:contentDescription="Open control panel"
+                            android:padding="8dp"
+                            android:scaleType="fitCenter"
+                            android:src="@drawable/ic_external"
+                            android:tint="@color/action_icon" />
+                    </LinearLayout>
+
+                    <View
+                        android:id="@+id/dividerBackup"
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:background="@color/divider" />
+
+                    <LinearLayout
+                        android:id="@+id/rowBackup"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal"
+                        android:paddingTop="11dp"
+                        android:paddingBottom="12dp">
+
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:orientation="vertical">
+
+                            <TextView
+                                style="@style/Text.Ejao.FieldLabel"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Backup panel" />
+
+                            <TextView
+                                android:id="@+id/tvBackupEndpoint"
+                                style="@style/Text.Ejao.EndpointValue"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="3dp"
+                                android:text="—" />
+                        </LinearLayout>
+
+                        <ImageButton
+                            android:id="@+id/btnCopyBackup"
+                            android:layout_width="34dp"
+                            android:layout_height="34dp"
+                            android:background="?attr/selectableItemBackgroundBorderless"
+                            android:contentDescription="Copy backup panel URL"
+                            android:padding="8dp"
+                            android:scaleType="fitCenter"
+                            android:src="@drawable/ic_copy"
+                            android:tint="@color/action_icon" />
+
+                        <ImageButton
+                            android:id="@+id/btnOpenBackup"
+                            android:layout_width="34dp"
+                            android:layout_height="34dp"
+                            android:background="?attr/selectableItemBackgroundBorderless"
+                            android:contentDescription="Open backup panel"
+                            android:padding="8dp"
+                            android:scaleType="fitCenter"
+                            android:src="@drawable/ic_external"
+                            android:tint="@color/action_icon" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <!-- ============ HOTSPOT ============ -->
+                <View
                     android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="Require approval for panel restart"
-                    android:textSize="15sp" />
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:text="When on, panel restarts need in-app approval within 10s. Off restarts immediately."
-                    android:textColor="@color/text_secondary"
-                    android:textSize="13sp" />
-            </LinearLayout>
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="24dp"
-                android:layout_marginBottom="12dp"
-                android:letterSpacing="0.06"
-                android:text="FEATURE TOGGLES"
-                android:textColor="@color/text_secondary"
-                android:textSize="13sp"
-                android:textStyle="bold" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:background="@drawable/bg_card"
-                android:orientation="vertical"
-                android:padding="16dp">
-
-                <CheckBox
-                    android:id="@+id/chkDisableBandSelector"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="Disable the WiFi band selector"
-                    android:textSize="15sp" />
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="6dp"
-                    android:text="Force 2.4 GHz and hide the picker."
-                    android:textColor="@color/text_secondary"
-                    android:textSize="13sp" />
-
-                <CheckBox
-                    android:id="@+id/chkKeepRetryingReform"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="16dp"
-                    android:text="Keep retrying to reform the hotspot"
-                    android:textSize="15sp" />
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="6dp"
-                    android:text="Recreate a dropped group forever instead of leaving the AP dead."
-                    android:textColor="@color/text_secondary"
-                    android:textSize="13sp" />
-
-                <CheckBox
-                    android:id="@+id/chkAutoRestartOnWifiReturn"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="16dp"
-                    android:text="Auto-restart proxy when WiFi returns"
-                    android:textSize="15sp" />
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="6dp"
-                    android:text="Bring the proxy up on its own when WiFi turns on."
-                    android:textColor="@color/text_secondary"
-                    android:textSize="13sp" />
-            </LinearLayout>
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="24dp"
-                android:layout_marginBottom="12dp"
-                android:drawableStart="@drawable/ic_shield"
-                android:drawablePadding="10dp"
-                android:letterSpacing="0.06"
-                android:text="WIFI GUARD (ADB, EXPERIMENTAL)"
-                android:textColor="@color/text_secondary"
-                android:textSize="13sp"
-                android:textStyle="bold" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:background="@drawable/bg_card"
-                android:orientation="vertical"
-                android:padding="16dp">
-
-                <TextView
-                    android:id="@+id/tvGuardStatus"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="Guard: DOWN (never started)"
-                    android:textColor="@color/text_primary"
-                    android:textIsSelectable="true"
-                    android:textSize="14sp" />
+                    android:layout_height="1dp"
+                    android:layout_marginTop="24dp"
+                    android:background="@color/divider" />
 
                 <LinearLayout
+                    android:id="@+id/expandHotspot"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
+                    android:background="@drawable/bg_row_ripple"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center_vertical"
                     android:orientation="horizontal"
-                    android:weightSum="2">
+                    android:paddingTop="15dp"
+                    android:paddingBottom="15dp">
 
-                    <com.google.android.material.textfield.TextInputLayout
-                        android:id="@+id/tilGuardInterval"
+                    <TextView
+                        style="@style/Text.Ejao.SectionIndex"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="01" />
+
+                    <TextView
+                        style="@style/Text.Ejao.GroupTitle"
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
-                        android:layout_marginEnd="6dp"
+                        android:layout_marginStart="10dp"
                         android:layout_weight="1"
-                        android:hint="Guard interval">
+                        android:text="HOTSPOT" />
 
-                        <com.google.android.material.textfield.TextInputEditText
-                            android:id="@+id/etGuardInterval"
+                    <ImageView
+                        android:id="@+id/chevronHotspot"
+                        android:layout_width="12dp"
+                        android:layout_height="12dp"
+                        android:contentDescription="@null"
+                        android:src="@drawable/ic_chevron"
+                        android:tint="@color/chevron" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/groupHotspot"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingBottom="6dp"
+                    android:visibility="gone">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:background="@drawable/bg_field"
+                        android:orientation="vertical"
+                        android:paddingStart="12dp"
+                        android:paddingTop="9dp"
+                        android:paddingEnd="12dp"
+                        android:paddingBottom="10dp">
+
+                        <TextView
+                            style="@style/Text.Ejao.FieldLabel"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Network name · SSID" />
+
+                        <EditText
+                            android:id="@+id/etSsid"
+                            style="@style/Widget.Ejao.Field"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
+                            android:layout_marginTop="3dp"
+                            android:imeOptions="actionNext"
+                            android:inputType="text"
+                            android:maxLength="32" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:background="@drawable/bg_field"
+                        android:orientation="vertical"
+                        android:paddingStart="12dp"
+                        android:paddingTop="9dp"
+                        android:paddingEnd="12dp"
+                        android:paddingBottom="10dp">
+
+                        <TextView
+                            style="@style/Text.Ejao.FieldLabel"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Password · 8–63 characters" />
+
+                        <EditText
+                            android:id="@+id/etPass"
+                            style="@style/Widget.Ejao.Field"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="3dp"
+                            android:imeOptions="actionNext"
+                            android:inputType="textVisiblePassword"
+                            android:maxLength="63" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:id="@+id/bandGroup"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical">
+
+                        <TextView
+                            style="@style/Text.Ejao.FieldLabel"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="14dp"
+                            android:text="Wi-Fi band" />
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="7dp"
+                            android:background="@drawable/bg_segment_track"
+                            android:orientation="horizontal"
+                            android:padding="3dp">
+
+                            <TextView
+                                android:id="@+id/bandSeg24"
+                                style="@style/Widget.Ejao.Segment"
+                                android:text="2.4 GHz" />
+
+                            <TextView
+                                android:id="@+id/bandSeg5"
+                                style="@style/Widget.Ejao.Segment"
+                                android:text="5 GHz" />
+
+                            <TextView
+                                android:id="@+id/bandSegAuto"
+                                style="@style/Widget.Ejao.Segment"
+                                android:text="Auto" />
+                        </LinearLayout>
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:orientation="horizontal">
+
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:background="@drawable/bg_field"
+                            android:orientation="vertical"
+                            android:paddingStart="12dp"
+                            android:paddingTop="9dp"
+                            android:paddingEnd="12dp"
+                            android:paddingBottom="10dp">
+
+                            <TextView
+                                style="@style/Text.Ejao.FieldLabel"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="SOCKS5 port" />
+
+                            <EditText
+                                android:id="@+id/etPort"
+                                style="@style/Widget.Ejao.FieldMono"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="3dp"
+                                android:imeOptions="actionDone"
+                                android:inputType="number"
+                                android:maxLength="5" />
+                        </LinearLayout>
+
+                        <Space
+                            android:layout_width="8dp"
+                            android:layout_height="1dp" />
+
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:background="@drawable/bg_field"
+                            android:orientation="vertical"
+                            android:paddingStart="12dp"
+                            android:paddingTop="9dp"
+                            android:paddingEnd="12dp"
+                            android:paddingBottom="10dp">
+
+                            <TextView
+                                style="@style/Text.Ejao.FieldLabel"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="HTTP port" />
+
+                            <EditText
+                                android:id="@+id/etHttpPort"
+                                style="@style/Widget.Ejao.FieldMono"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="3dp"
+                                android:imeOptions="actionDone"
+                                android:inputType="number"
+                                android:maxLength="5" />
+                        </LinearLayout>
+                    </LinearLayout>
+                </LinearLayout>
+
+                <!-- ============ KEEP-ALIVE ============ -->
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="1dp"
+                    android:background="@color/divider" />
+
+                <LinearLayout
+                    android:id="@+id/expandKeepalive"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_row_ripple"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingTop="15dp"
+                    android:paddingBottom="15dp">
+
+                    <TextView
+                        style="@style/Text.Ejao.SectionIndex"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="02" />
+
+                    <TextView
+                        style="@style/Text.Ejao.GroupTitle"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="10dp"
+                        android:layout_weight="1"
+                        android:text="KEEP-ALIVE" />
+
+                    <ImageView
+                        android:id="@+id/chevronKeepalive"
+                        android:layout_width="12dp"
+                        android:layout_height="12dp"
+                        android:contentDescription="@null"
+                        android:src="@drawable/ic_chevron"
+                        android:tint="@color/chevron" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/groupKeepalive"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingBottom="6dp"
+                    android:visibility="gone">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:background="@drawable/bg_field"
+                        android:orientation="vertical"
+                        android:paddingStart="12dp"
+                        android:paddingTop="9dp"
+                        android:paddingEnd="12dp"
+                        android:paddingBottom="10dp">
+
+                        <TextView
+                            style="@style/Text.Ejao.FieldLabel"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Ping URL" />
+
+                        <EditText
+                            android:id="@+id/etKeepaliveUrl"
+                            style="@style/Widget.Ejao.Field"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="3dp"
+                            android:imeOptions="actionNext"
+                            android:inputType="textUri" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:background="@drawable/bg_field"
+                        android:orientation="vertical"
+                        android:paddingStart="12dp"
+                        android:paddingTop="9dp"
+                        android:paddingEnd="12dp"
+                        android:paddingBottom="10dp">
+
+                        <TextView
+                            style="@style/Text.Ejao.FieldLabel"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Interval · seconds, min 15" />
+
+                        <EditText
+                            android:id="@+id/etKeepaliveInterval"
+                            style="@style/Widget.Ejao.FieldMono"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="3dp"
+                            android:imeOptions="actionDone"
                             android:inputType="number" />
-                    </com.google.android.material.textfield.TextInputLayout>
+                    </LinearLayout>
 
-                    <com.google.android.material.textfield.TextInputLayout
-                        android:id="@+id/tilGuardUnit"
+                    <TextView
+                        style="@style/Text.Ejao.Hint"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text="Applies after the proxy restarts." />
+                </LinearLayout>
+
+                <!-- ============ BEHAVIOR ============ -->
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="1dp"
+                    android:background="@color/divider" />
+
+                <LinearLayout
+                    android:id="@+id/expandBehavior"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_row_ripple"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingTop="15dp"
+                    android:paddingBottom="15dp">
+
+                    <TextView
+                        style="@style/Text.Ejao.SectionIndex"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="03" />
+
+                    <TextView
+                        style="@style/Text.Ejao.GroupTitle"
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
-                        android:layout_marginStart="6dp"
+                        android:layout_marginStart="10dp"
                         android:layout_weight="1"
-                        android:hint="Unit"
-                        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox.ExposedDropdownMenu">
+                        android:text="BEHAVIOR" />
 
-                        <AutoCompleteTextView
-                            android:id="@+id/etGuardUnit"
-                            android:layout_width="match_parent"
+                    <ImageView
+                        android:id="@+id/chevronBehavior"
+                        android:layout_width="12dp"
+                        android:layout_height="12dp"
+                        android:contentDescription="@null"
+                        android:src="@drawable/ic_chevron"
+                        android:tint="@color/chevron" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/groupBehavior"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingBottom="6dp"
+                    android:visibility="gone">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="46dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            style="@style/Text.Ejao.RowTitle"
+                            android:layout_width="0dp"
                             android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Require panel approval" />
+
+                        <androidx.appcompat.widget.SwitchCompat
+                            app:thumbTint="@color/switch_thumb_selector"
+                            app:trackTint="@color/switch_track_selector"
+                            android:id="@+id/swRequireApproval"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="46dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            style="@style/Text.Ejao.RowTitle"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Auto-restart on Wi-Fi return" />
+
+                        <androidx.appcompat.widget.SwitchCompat
+                            app:thumbTint="@color/switch_thumb_selector"
+                            app:trackTint="@color/switch_track_selector"
+                            android:id="@+id/swAutoRestart"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="46dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            style="@style/Text.Ejao.RowTitle"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Keep retrying hotspot" />
+
+                        <androidx.appcompat.widget.SwitchCompat
+                            app:thumbTint="@color/switch_thumb_selector"
+                            app:trackTint="@color/switch_track_selector"
+                            android:id="@+id/swKeepRetrying"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal"
+                        android:paddingTop="6dp"
+                        android:paddingBottom="6dp">
+
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:orientation="vertical">
+
+                            <TextView
+                                style="@style/Text.Ejao.RowTitle"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Disable band selector" />
+
+                            <TextView
+                                style="@style/Text.Ejao.RowSub"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="2dp"
+                                android:text="Forces 2.4 GHz and hides the band picker." />
+                        </LinearLayout>
+
+                        <androidx.appcompat.widget.SwitchCompat
+                            app:thumbTint="@color/switch_thumb_selector"
+                            app:trackTint="@color/switch_track_selector"
+                            android:id="@+id/swDisableBand"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <!-- ============ UPDATES ============ -->
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="1dp"
+                    android:background="@color/divider" />
+
+                <LinearLayout
+                    android:id="@+id/expandUpdates"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_row_ripple"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingTop="15dp"
+                    android:paddingBottom="15dp">
+
+                    <TextView
+                        style="@style/Text.Ejao.SectionIndex"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="04" />
+
+                    <TextView
+                        style="@style/Text.Ejao.GroupTitle"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="10dp"
+                        android:layout_weight="1"
+                        android:text="UPDATES" />
+
+                    <ImageView
+                        android:id="@+id/chevronUpdates"
+                        android:layout_width="12dp"
+                        android:layout_height="12dp"
+                        android:contentDescription="@null"
+                        android:src="@drawable/ic_chevron"
+                        android:tint="@color/chevron" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/groupUpdates"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingBottom="6dp"
+                    android:visibility="gone">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="46dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            style="@style/Text.Ejao.RowTitle"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Background update checks" />
+
+                        <androidx.appcompat.widget.SwitchCompat
+                            app:thumbTint="@color/switch_thumb_selector"
+                            app:trackTint="@color/switch_track_selector"
+                            android:id="@+id/swAutoUpdate"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:id="@+id/updateChips"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:id="@+id/chip1h"
+                            style="@style/Widget.Ejao.Chip"
+                            android:text="1h" />
+
+                        <Space
+                            android:layout_width="6dp"
+                            android:layout_height="1dp" />
+
+                        <TextView
+                            android:id="@+id/chip3h"
+                            style="@style/Widget.Ejao.Chip"
+                            android:text="3h" />
+
+                        <Space
+                            android:layout_width="6dp"
+                            android:layout_height="1dp" />
+
+                        <TextView
+                            android:id="@+id/chip6h"
+                            style="@style/Widget.Ejao.Chip"
+                            android:text="6h" />
+
+                        <Space
+                            android:layout_width="6dp"
+                            android:layout_height="1dp" />
+
+                        <TextView
+                            android:id="@+id/chip12h"
+                            style="@style/Widget.Ejao.Chip"
+                            android:text="12h" />
+
+                        <Space
+                            android:layout_width="6dp"
+                            android:layout_height="1dp" />
+
+                        <TextView
+                            android:id="@+id/chip24h"
+                            style="@style/Widget.Ejao.Chip"
+                            android:text="24h" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:id="@+id/btnCheckUpdate"
+                            android:layout_width="wrap_content"
+                            android:layout_height="38dp"
+                            android:background="@drawable/bg_btn_ghost"
                             android:clickable="true"
-                            android:focusable="false"
-                            android:inputType="none" />
-                    </com.google.android.material.textfield.TextInputLayout>
+                            android:focusable="true"
+                            android:fontFamily="monospace"
+                            android:gravity="center"
+                            android:minWidth="72dp"
+                            android:paddingStart="16dp"
+                            android:paddingEnd="16dp"
+                            android:letterSpacing="0.08"
+                            android:text="Check"
+                            android:textAllCaps="true"
+                            android:textColor="@color/btn_ghost_text"
+                            android:textSize="12sp" />
+
+                        <TextView
+                            android:id="@+id/tvUpdateStatus"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="12dp"
+                            android:layout_weight="1"
+                            android:textColor="@color/text_muted"
+                            android:textSize="10.5sp" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <!-- ============ DEVICE ============ -->
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="1dp"
+                    android:background="@color/divider" />
+
+                <LinearLayout
+                    android:id="@+id/expandDevice"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_row_ripple"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingTop="15dp"
+                    android:paddingBottom="15dp">
+
+                    <TextView
+                        style="@style/Text.Ejao.SectionIndex"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="05" />
+
+                    <TextView
+                        style="@style/Text.Ejao.GroupTitle"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="10dp"
+                        android:layout_weight="1"
+                        android:text="DEVICE" />
+
+                    <ImageView
+                        android:id="@+id/chevronDevice"
+                        android:layout_width="12dp"
+                        android:layout_height="12dp"
+                        android:contentDescription="@null"
+                        android:src="@drawable/ic_chevron"
+                        android:tint="@color/chevron" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/groupDevice"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingBottom="6dp"
+                    android:visibility="gone">
+
+                    <LinearLayout
+                        android:id="@+id/btnBattery"
+                        android:layout_width="match_parent"
+                        android:layout_height="46dp"
+                        android:background="@drawable/bg_row_ripple"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            style="@style/Text.Ejao.RowTitle"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Battery optimization" />
+
+                        <ImageView
+                            android:layout_width="12dp"
+                            android:layout_height="12dp"
+                            android:contentDescription="@null"
+                            android:src="@drawable/ic_chevron"
+                            android:tint="@color/chevron" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:id="@+id/btnAutostart"
+                        android:layout_width="match_parent"
+                        android:layout_height="46dp"
+                        android:background="@drawable/bg_row_ripple"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            style="@style/Text.Ejao.RowTitle"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Autostart" />
+
+                        <ImageView
+                            android:layout_width="12dp"
+                            android:layout_height="12dp"
+                            android:contentDescription="@null"
+                            android:src="@drawable/ic_chevron"
+                            android:tint="@color/chevron" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:id="@+id/btnWiki"
+                        android:layout_width="match_parent"
+                        android:layout_height="46dp"
+                        android:background="@drawable/bg_row_ripple"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            style="@style/Text.Ejao.RowTitle"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Setup guide" />
+
+                        <ImageView
+                            android:layout_width="12dp"
+                            android:layout_height="12dp"
+                            android:contentDescription="@null"
+                            android:src="@drawable/ic_external"
+                            android:tint="@color/chevron" />
+                    </LinearLayout>
                 </LinearLayout>
 
                 <TextView
+                    android:id="@+id/tvFooterVersion"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="6dp"
-                    android:text="60s minimum (daemon enforces it). Applies to the next ADB start - re-run the command."
-                    android:textColor="@color/text_secondary"
-                    android:textSize="12sp" />
-
-                <Button
-                    android:id="@+id/btnGuardCopy"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="16dp"
-                    android:background="@drawable/bg_button_secondary"
-                    android:fontFamily="sans-serif-medium"
-                    android:minHeight="56dp"
-                    android:padding="16dp"
-                    android:text="COPY ADB GUARD COMMAND"
-                    android:textAllCaps="false"
-                    android:textColor="@color/text_primary"
-                    android:textSize="16sp"
-                    android:textStyle="bold"
-                    app:backgroundTint="@null" />
-
-                <Button
-                    android:id="@+id/btnGuardRequest"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
-                    android:background="@drawable/bg_button_secondary"
-                    android:fontFamily="sans-serif-medium"
-                    android:minHeight="56dp"
-                    android:padding="16dp"
-                    android:text="REQUEST WIFI NOW"
-                    android:textAllCaps="false"
-                    android:textColor="@color/text_primary"
-                    android:textSize="16sp"
-                    android:textStyle="bold"
-                    app:backgroundTint="@null" />
-
-                <Button
-                    android:id="@+id/btnGuardStop"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
-                    android:background="@drawable/bg_button_secondary"
-                    android:fontFamily="sans-serif-medium"
-                    android:minHeight="56dp"
-                    android:padding="16dp"
-                    android:text="STOP GUARD"
-                    android:textAllCaps="false"
-                    android:textColor="@color/text_primary"
-                    android:textSize="16sp"
-                    android:textStyle="bold"
-                    app:backgroundTint="@null" />
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="12dp"
-                    android:text="Paste the command on a PC with USB debugging to start a shell-side guard: it turns WiFi back on every interval and on request. No extra app. Stop it anytime with STOP GUARD (or reboot). Re-run after reboot / update. Check status here ~40s after starting."
-                    android:textColor="@color/text_secondary"
-                    android:textSize="13sp" />
+                    android:layout_marginTop="28dp"
+                    android:fontFamily="monospace"
+                    android:gravity="center"
+                    android:letterSpacing="0.08"
+                    android:textColor="@color/text_muted"
+                    android:textSize="9.5sp" />
             </LinearLayout>
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="28dp"
-                android:layout_marginBottom="16dp"
-                android:text="@string/help"
-                android:textIsSelectable="true"
-                android:textSize="14sp"
-                android:textColor="@color/text_secondary" />
-
-        </LinearLayout>
-
+        </ScrollView>
     </LinearLayout>
-    </com.ejao.proxy.SwipeScrollView>
-
-    <!-- Floating bottom pill nav: sliding ink capsule marks the active tab -->
-    <FrameLayout
-        android:id="@+id/bottomPill"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom|center_horizontal"
-        android:layout_marginBottom="20dp"
-        android:background="@drawable/bg_pill"
-        android:elevation="10dp"
-        android:padding="5dp">
-
-        <View
-            android:id="@+id/pillIndicator"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_gravity="center_vertical"
-            android:background="@drawable/bg_pill_selected" />
-
-        <LinearLayout
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal">
-
-            <TextView
-                android:id="@+id/pillProxy"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:background="@drawable/pill_tab_bg"
-                android:drawableTop="@drawable/ic_server"
-                android:drawablePadding="2dp"
-                android:gravity="center"
-                android:minWidth="118dp"
-                android:padding="10dp"
-                android:text="Proxy"
-                android:textColor="@color/pill_tab_text_selector"
-                android:textSize="12sp"
-                android:textStyle="bold" />
-
-            <TextView
-                android:id="@+id/pillKeep"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:background="@drawable/pill_tab_bg"
-                android:drawableTop="@drawable/ic_shield"
-                android:drawablePadding="2dp"
-                android:gravity="center"
-                android:minWidth="118dp"
-                android:padding="10dp"
-                android:text="Keep-Alive"
-                android:textColor="@color/pill_tab_text_selector"
-                android:textSize="12sp"
-                android:textStyle="bold" />
-        </LinearLayout>
-    </FrameLayout>
-
 </FrameLayout>

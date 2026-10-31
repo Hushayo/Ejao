@@ -42,6 +42,9 @@ class ProxyService : Service() {
         private const val TAG = "EjaoService"
         private const val WATCHDOG_REQ = 7
         private const val WATCHDOG_INTERVAL_MS = 60_000L
+        // How long an ARP-unmapped IP may show as a client before we treat it
+        // as a ghost and drop it.
+        private const val RECENT_CLIENT_MS = 120_000L
 
         fun scheduleWatchdog(context: Context) {
             val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
@@ -226,10 +229,7 @@ class ProxyService : Service() {
                 if (config.autoRestartOnWifiReturn) {
                     while (!wifiOk && started.get()) {
                         if (!ConfigManager.load(this@ProxyService).autoRestartOnWifiReturn) break
-                        // AprilFool WiFi guard: no-op file when the ADB daemon
-                        // isn't running; picked up within ~30s when it is.
-                        runCatching { WifiGuard.requestWifiOn(this@ProxyService) }
-                        updateStatus("WiFi is off - waiting for it to return (ADB guard requested)...")
+                        updateStatus("WiFi is off - waiting for it to return...")
                         delay(5000)
                         wifiOk = p2p.ensureWifiOn()
                     }
@@ -474,6 +474,12 @@ class ProxyService : Service() {
             var lastTx = readP2pBytes()?.second ?: -1L
             var lastNetT = System.currentTimeMillis()
             var tick = 0
+            // IP -> MAC remembered for this run. A DHCP lease change used to
+            // strand the old IP's usage in its own "Unknown device" row.
+            val ipMacHistory = object : LinkedHashMap<String, String>(32, 0.75f, true) {
+                override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>): Boolean =
+                    size > 128
+            }
             while (currentCoroutineContext().isActive && started.get() && pipelineGen.get() == myGen) {
                 delay(1000)
                 if (pipelineGen.get() != myGen || !started.get()) return
@@ -596,83 +602,89 @@ class ProxyService : Service() {
                         AppState.isReforming.value = false
                         try {
                             val goIpNow = AppState.apInfo.value.goIp.ifEmpty { goIp }
-                            val usage = ClientUsage.snapshotMb()
+                            val usage = ClientUsage.snapshot()
                             val arp = readArpTable()
                             val p2pDevices = (g.clientList ?: emptyList()).mapNotNull { d ->
                                 val mac = (d?.deviceAddress ?: "").trim()
                                 if (mac.isEmpty()) null
                                 else mac to (d?.deviceName?.trim() ?: "")
                             }
-                            val p2pMacs = p2pDevices.map { it.first.lowercase() }.toSet()
                             val p2pNameByMac = p2pDevices.associate { it.first.lowercase() to it.second }
-                            // MAC -> IP from ARP (preferred: p2p/wlan interfaces, fallback any).
+                            // MAC -> IP / IP -> MAC from ARP (preferred: p2p/wlan interfaces, fallback any).
                             val ipByMac = mutableMapOf<String, String>()
                             val macByIp = mutableMapOf<String, String>()
                             for ((ip, mac, _) in arp) {
                                 if (ip.isEmpty() || mac.isEmpty()) continue
-                                if (ip == goIpNow || ip == "192.168.49.1") continue
+                                if (isIgnoredClientIp(ip, goIpNow)) continue
                                 val ml = mac.lowercase()
                                 if (ipByMac[ml].isNullOrEmpty()) ipByMac[ml] = ip
                                 if (macByIp[ip].isNullOrEmpty()) macByIp[ip] = mac
                             }
+                            // Remember IP -> MAC for the service lifetime so
+                            // usage from an earlier DHCP lease keeps folding
+                            // into the device's single row (access-ordered and
+                            // bounded so long sessions cannot grow it).
+                            for ((ip, mac) in macByIp) ipMacHistory[ip] = mac.lowercase()
+                            // Freshest IP per MAC, used for the row's subtitle.
+                            val ipByMacFresh = mutableMapOf<String, String>()
+                            for ((ip, u) in usage) {
+                                if (isIgnoredClientIp(ip, goIpNow)) continue
+                                val mac = macByIp[ip] ?: ipMacHistory[ip] ?: continue
+                                val ml = mac.lowercase()
+                                val prev = ipByMacFresh[ml]
+                                if (prev == null || (usage[prev]?.lastActiveMs ?: 0L) < u.lastActiveMs) {
+                                    ipByMacFresh[ml] = ip
+                                }
+                            }
+                            val now = SystemClock.elapsedRealtime()
+                            val recentCutoff = now - RECENT_CLIENT_MS
                             class Merged(var mac: String, var ip: String, var name: String, var mb: Double)
                             val merged = linkedMapOf<String, Merged>()
-                            fun keyForEntry(mac: String, ip: String): String {
-                                val ml = mac.lowercase()
-                                if (ml.isNotEmpty() && ml.contains(":")) return "mac:$ml"
-                                if (ip.isNotEmpty()) return "ip:$ip"
-                                return ""
-                            }
                             // 1) P2P members first (authoritative membership).
+                            //    They stay visible even when idle.
                             for ((mac, rawName) in p2pDevices) {
                                 val ml = mac.lowercase()
-                                val ip = ipByMac[ml] ?: ""
-                                val custom = runCatching { DeviceNames.get(this@ProxyService, mac, ip) }.getOrNull()
-                                val display = custom ?: rawName.ifEmpty { "Unknown device" }
-                                val mb = if (ip.isNotEmpty()) usage[ip] ?: 0.0 else 0.0
-                                merged["mac:$ml"] = Merged(mac, ip, display, mb)
+                                val ip = ipByMacFresh[ml] ?: ipByMac[ml] ?: ""
+                                merged["mac:$ml"] = Merged(
+                                    mac, ip, clientDisplayName(mac, ip, rawName), 0.0
+                                )
                             }
-                            // 2) ARP entries with traffic or P2P membership (real devices, even if P2P list lags).
-                            for ((ip, mac, _) in arp) {
-                                if (ip == goIpNow || ip == "192.168.49.1") continue
-                                val ml = mac.lowercase()
-                                val k = if (ml.contains(":")) "mac:$ml" else "ip:$ip"
-                                val existing = merged[k]
-                                if (existing != null) {
-                                    if (existing.ip.isEmpty()) existing.ip = ip
-                                    if (existing.mac.isEmpty()) existing.mac = mac
-                                    val u = usage[ip]
-                                    if (u != null && u > existing.mb) existing.mb = u
-                                } else {
-                                    // Only surface ARP rows that are P2P members or have real usage.
-                                    val u = usage[ip] ?: 0.0
-                                    val isP2p = ml in p2pMacs
-                                    if (!isP2p && u <= 0.0) continue
-                                    val custom = runCatching { DeviceNames.get(this@ProxyService, mac, ip) }.getOrNull()
-                                    val p2pName = p2pNameByMac[ml] ?: ""
-                                    val display = custom ?: p2pName.ifEmpty { "Unknown device" }
-                                    merged[k] = Merged(mac, ip, display, u)
-                                }
-                            }
-                            // 3) Usage orphans (traffic from an IP ARP hasn't mapped yet) — never the gateway.
-                            for ((ip, mb) in usage) {
-                                if (mb <= 0.0) continue
-                                if (ip == goIpNow || ip == "192.168.49.1") continue
-                                val mac = macByIp[ip] ?: ""
-                                val k = keyForEntry(mac, ip)
-                                if (k.isEmpty() || merged.containsKey(k)) {
-                                    // Attribute usage to existing MAC entry if IP now resolves to it.
-                                    if (k.isNotEmpty()) {
-                                        val e = merged[k]
-                                        if (e != null && mb > e.mb) e.mb = mb
+                            // 2) Fold every usage lease onto its MAC row. A
+                            //    device that reconnects with a new DHCP IP used
+                            //    to leave the old IP behind as a second ghost
+                            //    "Unknown device" profile; MAC folding (plus
+                            //    ipMacHistory) keeps exactly one row per device.
+                            for ((ip, u) in usage) {
+                                if (isIgnoredClientIp(ip, goIpNow)) continue
+                                val mac = macByIp[ip] ?: ipMacHistory[ip] ?: ""
+                                if (mac.isNotEmpty()) {
+                                    val ml = mac.lowercase()
+                                    val e = merged["mac:$ml"]
+                                    if (e != null) {
+                                        e.mb += u.mb
+                                        if (e.ip.isEmpty() ||
+                                            (usage[e.ip]?.lastActiveMs ?: 0L) < u.lastActiveMs
+                                        ) e.ip = ip
+                                    } else if (macByIp[ip] != null) {
+                                        // Still in ARP but missing from the P2P
+                                        // list (it lags on some ROMs) - show it.
+                                        merged["mac:$ml"] = Merged(
+                                            mac, ip,
+                                            clientDisplayName(mac, ip, p2pNameByMac[ml] ?: ""),
+                                            u.mb
+                                        )
                                     }
-                                    continue
+                                    // Not in ARP and not a P2P member: the device
+                                    // is gone. Its usage stays attributed for when
+                                    // it returns, but no ghost row is created.
+                                } else if (u.lastActiveMs >= recentCutoff) {
+                                    // Traffic from an IP ARP has not mapped yet.
+                                    // Show it briefly so new clients aren't
+                                    // invisible, then drop it.
+                                    merged["ip:$ip"] = Merged(
+                                        "", ip, clientDisplayName("", ip, ""), u.mb
+                                    )
                                 }
-                                // If this IP belongs to an already-listed MAC via another IP, skip (one row per device).
-                                if (mac.isNotEmpty() && merged.containsKey("mac:${mac.lowercase()}")) continue
-                                val custom = runCatching { DeviceNames.get(this@ProxyService, mac, ip) }.getOrNull()
-                                val p2pName = if (mac.isNotEmpty()) p2pNameByMac[mac.lowercase()] ?: "" else ""
-                                merged[k] = Merged(mac, ip, custom ?: p2pName.ifEmpty { "Unknown device" }, mb)
                             }
                             val list = merged.values.map { m ->
                                 val id = DeviceNames.keyFor(m.mac, m.ip).ifEmpty { m.ip.ifEmpty { m.mac } }
@@ -681,6 +693,17 @@ class ProxyService : Service() {
                             val realCount = list.size
                             AppState.apInfo.value = AppState.apInfo.value.copy(clients = realCount)
                             AppState.lanClients.value = list
+                            // Resolve/refresh hostnames off-thread. Cached
+                            // names surface on the next merge tick; lookups are
+                            // throttled and deduped inside LanHostnames.
+                            for (m in merged.values) {
+                                if (m.ip.isEmpty()) continue
+                                val cached = LanHostnames.cached(m.mac, m.ip)
+                                if (cached == null || !LanHostnames.isFresh(m.mac, m.ip)) {
+                                    LanHostnames.requestLookup(m.mac, m.ip, goIpNow)
+                                }
+                            }
+                            ClientUsage.prune { ip -> macByIp.containsKey(ip) }
                             // P2P keepalive: Vivo kills idle GO groups within
                             // minutes even with clients associated (phone-side
                             // keepalive ping goes over cellular, so the P2P
@@ -1029,6 +1052,18 @@ class ProxyService : Service() {
             false
         }
     }
+
+    private fun clientDisplayName(mac: String, ip: String, p2pName: String): String {
+        val custom = runCatching { DeviceNames.get(this, mac, ip) }.getOrNull()
+        if (!custom.isNullOrBlank()) return custom
+        if (p2pName.isNotBlank()) return p2pName
+        LanHostnames.cached(mac, ip)?.let { return it }
+        return "Unknown device"
+    }
+
+    private fun isIgnoredClientIp(ip: String, goIpNow: String): Boolean =
+        ip.isBlank() || ip.contains(':') || ip == goIpNow || ip == "192.168.49.1" ||
+            ip.startsWith("127.") || ip.startsWith("169.254.") || ip == "0.0.0.0"
 
     private fun readP2pBytes(): Pair<Long, Long>? {
         for (iface in listOf("p2p0", "p2p-wlan0-0", "p2p-wlan0-1", "p2p-wlan0-2")) {

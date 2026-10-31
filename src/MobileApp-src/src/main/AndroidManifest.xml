@@ -44,7 +44,8 @@
         <activity
             android:name=".MainActivity"
             android:exported="false"
-            android:launchMode="singleTask" />
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize" />
 
         <service
             android:name=".ProxyService"

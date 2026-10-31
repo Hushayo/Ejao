@@ -1,45 +1,38 @@
 <resources>
     <style name="Theme.Ejao" parent="Theme.Material3.Dark.NoActionBar">
-        <item name="colorPrimary">@color/primary</item>
+        <item name="colorPrimary">@color/accent</item>
         <item name="colorOnPrimary">@color/on_primary</item>
         <item name="colorSecondary">@color/accent</item>
         <item name="colorAccent">@color/accent</item>
         <item name="android:colorAccent">@color/accent</item>
 
-        <!-- Brand-colored controls: inputs, checkboxes, focus states -->
         <item name="colorControlNormal">@color/surface_line</item>
         <item name="colorControlActivated">@color/accent</item>
-        <item name="android:textColorHint">#A8A29E</item>
-
-        <!-- Outlined text fields get the accent stroke + rounded corners -->
-        <item name="textInputStyle">@style/Widget.Ejao.TextInputLayout</item>
+        <item name="android:colorControlHighlight">#1AFFFFFF</item>
+        <item name="android:textColorHint">@color/text_dim</item>
 
         <item name="android:windowBackground">@color/bg</item>
         <item name="android:colorBackground">@color/bg</item>
         <item name="android:textColorPrimary">@color/text_primary</item>
         <item name="android:textColorSecondary">@color/text_secondary</item>
-        <item name="android:buttonCornerRadius">12dp</item>
 
-        <!-- Consistent rounded corners for all Material components -->
-        <item name="shapeAppearanceSmallComponent">@style/ShapeAppearance.Ejao.SmallComponent</item>
-        <item name="shapeAppearanceMediumComponent">@style/ShapeAppearance.Ejao.MediumComponent</item>
-        <item name="shapeAppearanceLargeComponent">@style/ShapeAppearance.Ejao.LargeComponent</item>
+        <item name="android:statusBarColor">@color/bg</item>
+        <item name="android:navigationBarColor">@color/bg</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
 
-        <!-- Checkbox and Switch styles -->
         <item name="checkboxStyle">@style/Widget.Ejao.CheckBox</item>
         <item name="materialSwitchStyle">@style/Widget.Ejao.Switch</item>
     </style>
 
-    <style name="Widget.Ejao.TextInputLayout" parent="Widget.MaterialComponents.TextInputLayout.OutlinedBox">
-        <item name="boxStrokeColor">@color/accent</item>
-        <item name="hintTextColor">@color/accent</item>
-        <item name="boxStrokeWidthFocused">2dp</item>
-        <item name="android:textColorHint">#A8A29E</item>
-    </style>
+    <!-- Dotted style names resolve their parent from the prefix; these empty
+         bases keep that implicit lookup from failing aapt linking. -->
+    <style name="Text.Ejao" parent="" />
+    <style name="Widget.Ejao" parent="" />
 
     <style name="Widget.Ejao.CheckBox" parent="Widget.MaterialComponents.CompoundButton.CheckBox">
         <item name="buttonTint">@color/checkbox_selector</item>
-        <item name="android:textSize">15sp</item>
         <item name="android:minHeight">24dp</item>
     </style>
 
@@ -48,19 +41,151 @@
         <item name="trackTint">@color/switch_track_selector</item>
     </style>
 
-    <style name="ShapeAppearance.Ejao.SmallComponent" parent="ShapeAppearance.MaterialComponents.SmallComponent">
-        <item name="cornerFamily">rounded</item>
-        <item name="cornerSize">8dp</item>
+    <style name="Widget.Ejao.Segment">
+        <item name="android:layout_width">0dp</item>
+        <item name="android:layout_height">34dp</item>
+        <item name="android:layout_weight">1</item>
+        <item name="android:gravity">center</item>
+        <item name="android:textSize">11sp</item>
+        <item name="android:fontFamily">monospace</item>
+        <item name="android:letterSpacing">0.04</item>
+        <item name="android:textColor">@color/segment_text_selector</item>
+        <item name="android:background">@drawable/bg_segment</item>
+        <item name="android:clickable">true</item>
+        <item name="android:focusable">true</item>
     </style>
 
-    <style name="ShapeAppearance.Ejao.MediumComponent" parent="ShapeAppearance.MaterialComponents.MediumComponent">
-        <item name="cornerFamily">rounded</item>
-        <item name="cornerSize">12dp</item>
+    <style name="Widget.Ejao.Chip">
+        <item name="android:layout_width">0dp</item>
+        <item name="android:layout_height">32dp</item>
+        <item name="android:layout_weight">1</item>
+        <item name="android:gravity">center</item>
+        <item name="android:fontFamily">monospace</item>
+        <item name="android:textSize">11sp</item>
+        <item name="android:letterSpacing">0.04</item>
+        <item name="android:textColor">@color/segment_text_selector</item>
+        <item name="android:background">@drawable/bg_chip</item>
+        <item name="android:clickable">true</item>
+        <item name="android:focusable">true</item>
     </style>
 
-    <style name="ShapeAppearance.Ejao.LargeComponent" parent="ShapeAppearance.MaterialComponents.LargeComponent">
-        <item name="cornerFamily">rounded</item>
-        <item name="cornerSize">16dp</item>
+    <!-- Display: condensed, tight, instrument-panel state word. -->
+    <style name="Text.Ejao.Display">
+        <item name="android:textSize">40sp</item>
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="android:fontFamily">sans-serif-condensed</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:letterSpacing">0.01</item>
+        <item name="android:includeFontPadding">false</item>
+    </style>
+
+    <style name="Text.Ejao.Eyebrow">
+        <item name="android:textSize">9sp</item>
+        <item name="android:textColor">@color/eyebrow</item>
+        <item name="android:fontFamily">monospace</item>
+        <item name="android:letterSpacing">0.18</item>
+        <item name="android:textAllCaps">true</item>
+    </style>
+
+    <style name="Text.Ejao.SectionIndex">
+        <item name="android:textSize">9.5sp</item>
+        <item name="android:textColor">@color/accent</item>
+        <item name="android:fontFamily">monospace</item>
+        <item name="android:letterSpacing">0.08</item>
+    </style>
+
+    <style name="Text.Ejao.SectionTitle">
+        <item name="android:textSize">9.5sp</item>
+        <item name="android:textColor">@color/section_title</item>
+        <item name="android:fontFamily">monospace</item>
+        <item name="android:letterSpacing">0.16</item>
+        <item name="android:textAllCaps">true</item>
+    </style>
+
+    <style name="Text.Ejao.SectionHint">
+        <item name="android:textSize">9.5sp</item>
+        <item name="android:textColor">@color/text_muted</item>
+        <item name="android:fontFamily">monospace</item>
+    </style>
+
+    <style name="Text.Ejao.GroupTitle">
+        <item name="android:textSize">12.5sp</item>
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="android:fontFamily">monospace</item>
+        <item name="android:letterSpacing">0.08</item>
+        <item name="android:textAllCaps">true</item>
+    </style>
+
+    <style name="Text.Ejao.FieldLabel">
+        <item name="android:textSize">9sp</item>
+        <item name="android:textColor">@color/field_label</item>
+        <item name="android:fontFamily">monospace</item>
+        <item name="android:letterSpacing">0.12</item>
+        <item name="android:textAllCaps">true</item>
+    </style>
+
+    <style name="Text.Ejao.MetricLabel">
+        <item name="android:textSize">9sp</item>
+        <item name="android:textColor">@color/field_label</item>
+        <item name="android:fontFamily">monospace</item>
+        <item name="android:letterSpacing">0.14</item>
+        <item name="android:textAllCaps">true</item>
+    </style>
+
+    <style name="Text.Ejao.MetricValue">
+        <item name="android:textSize">17sp</item>
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="android:fontFamily">monospace</item>
+    </style>
+
+    <style name="Text.Ejao.EndpointValue">
+        <item name="android:textSize">13sp</item>
+        <item name="android:textColor">@color/mono_text</item>
+        <item name="android:fontFamily">monospace</item>
+        <item name="android:letterSpacing">-0.01</item>
+    </style>
+
+    <style name="Text.Ejao.RowTitle">
+        <item name="android:textSize">13.5sp</item>
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="android:fontFamily">sans-serif</item>
+    </style>
+
+    <style name="Text.Ejao.RowSub">
+        <item name="android:textSize">10.5sp</item>
+        <item name="android:textColor">@color/text_muted</item>
+    </style>
+
+    <style name="Text.Ejao.Hint">
+        <item name="android:textSize">10sp</item>
+        <item name="android:textColor">@color/hint_text</item>
+        <item name="android:lineSpacingMultiplier">1.3</item>
+    </style>
+
+    <style name="Text.Ejao.Cta">
+        <item name="android:textSize">13sp</item>
+        <item name="android:fontFamily">monospace</item>
+        <item name="android:letterSpacing">0.08</item>
+        <item name="android:textAllCaps">true</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+
+    <style name="Widget.Ejao.Field" parent="Widget.AppCompat.EditText">
+        <item name="android:background">@null</item>
+        <item name="android:padding">0dp</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:textColor">@color/text_primary</item>
+        <item name="android:textColorHint">@color/text_muted</item>
+        <item name="android:fontFamily">sans-serif</item>
+        <item name="android:singleLine">true</item>
+        <item name="android:includeFontPadding">false</item>
+    </style>
+
+    <style name="Widget.Ejao.FieldMono" parent="Widget.Ejao.Field">
+        <item name="android:textSize">13.5sp</item>
+        <item name="android:textColor">@color/mono_text</item>
+        <item name="android:fontFamily">monospace</item>
+        <item name="android:letterSpacing">-0.01</item>
     </style>
 
     <style name="Theme.Ejao.Gate" parent="android:Theme.NoDisplay" />

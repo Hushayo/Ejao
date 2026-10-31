@@ -1,5 +1,6 @@
 package com.ejao.proxy
 
+import android.os.SystemClock
 import kotlinx.coroutines.flow.MutableStateFlow
 
 data class ApInfo(
@@ -39,15 +40,41 @@ data class LanClient(
 )
 
 object ClientUsage {
+    private const val RETENTION_MS = 30 * 60_000L
+
     private val bytes = java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>()
+    private val lastActive = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    data class Usage(val mb: Double, val lastActiveMs: Long)
 
     fun add(ip: String, n: Long) {
         if (ip.isBlank() || n <= 0) return
         bytes.computeIfAbsent(ip) { java.util.concurrent.atomic.AtomicLong() }.addAndGet(n)
+        lastActive[ip] = android.os.SystemClock.elapsedRealtime()
     }
 
-    fun snapshotMb(): Map<String, Double> =
-        bytes.mapValues { it.value.get() / 1048576.0 }
+    fun snapshot(): Map<String, Usage> {
+        val now = android.os.SystemClock.elapsedRealtime()
+        return bytes.mapValues { (ip, v) ->
+            Usage(v.get() / 1048576.0, lastActive[ip] ?: now)
+        }
+    }
 
-    fun reset() = bytes.clear()
+    /**
+     * Drops long-dead IPs so a device that left cannot keep a row alive
+     * forever. [keep] protects ips still present in the ARP table.
+     */
+    fun prune(keep: (String) -> Boolean) {
+        val cutoff = android.os.SystemClock.elapsedRealtime() - RETENTION_MS
+        for (ip in bytes.keys.toList()) {
+            if ((lastActive[ip] ?: 0L) >= cutoff || keep(ip)) continue
+            bytes.remove(ip)
+            lastActive.remove(ip)
+        }
+    }
+
+    fun reset() {
+        bytes.clear()
+        lastActive.clear()
+    }
 }
