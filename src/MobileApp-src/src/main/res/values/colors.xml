@@ -1,27 +1,66 @@
 <resources>
-    <color name="primary">#F5F2EE</color>
-    <color name="on_primary">#171412</color>
-    <color name="bg">#171412</color>
-    <color name="text_primary">#F5F2EE</color>
-    <color name="text_secondary">#B8A99F</color>
+    <!-- Field-instrument palette: warm charcoal, lamp amber, off-white type.
+         No teal/violet gradients - the only glow is the status lamp. -->
+    <color name="primary">#F2ECE2</color>
+    <color name="on_primary">#1A1206</color>
+    <color name="bg">#0F0D0B</color>
+    <color name="text_primary">#F2ECE2</color>
+    <color name="text_secondary">#C4B8A8</color>
+    <color name="text_dim">#948776</color>
+    <color name="text_muted">#746856</color>
 
-    <!-- Single calm accent (no gradients) -->
-    <color name="accent">#4ADE80</color>
-    <color name="accent_pressed">#22C55E</color>
-    <color name="accent_blue">#4ADE80</color>
-    <color name="accent_blue_pressed">#22C55E</color>
+    <color name="accent">#F0B55E</color>
+    <color name="accent_pressed">#D59542</color>
+    <color name="accent_blue">#F0B55E</color>
+    <color name="accent_blue_pressed">#D59542</color>
+    <color name="accent_text">#FFC97C</color>
 
-    <color name="surface">#201C1A</color>
-    <color name="surface_line">#332D29</color>
+    <color name="surface">#161310</color>
+    <color name="surface_line">#2C251D</color>
+    <color name="divider">#211B15</color>
 
-    <color name="status_bg">#26211D</color>
-    <color name="status_border">#4ADE80</color>
-    <color name="danger">#F87171</color>
-    <color name="ok">#4ADE80</color>
+    <color name="status_bg">#161310</color>
+    <color name="status_border">#F0B55E</color>
+    <color name="danger">#EA8377</color>
+    <color name="ok">#F0B55E</color>
+    <color name="violet">#B79A7A</color>
+    <color name="violet_text">#C7AB8C</color>
 
-    <!-- Launcher icon background. Dedicated value on purpose: the adaptive
-        icon pairs it with a white foreground, so it must stay dark even if
-        theme colors change (reusing @color/primary turned the icon
-        white-on-off-white and invisible). -->
+    <color name="nav_text_active">#FFC97C</color>
+    <color name="nav_text_inactive">#948776</color>
+    <color name="segment_text_inactive">#9A8D7B</color>
+    <color name="section_icon">#948776</color>
+    <color name="endpoint_icon">#A79B8B</color>
+    <color name="saved_ok">#D8B072</color>
+    <color name="status_pill_on_text">#FFC97C</color>
+    <color name="status_pill_off_text">#948776</color>
+    <color name="mode_chip_text">#C7AB8C</color>
+    <color name="mono_text">#F0E8DB</color>
+
+    <color name="field_label">#887A66</color>
+    <color name="eyebrow">#A8824F</color>
+    <color name="hero_sub">#A99B88</color>
+    <color name="page_sub">#A99B88</color>
+    <color name="section_title">#948776</color>
+    <color name="overline">#948776</color>
+    <color name="saved_text">#746856</color>
+    <color name="saved_icon">#D8B072</color>
+    <color name="mint_icon">#C7AB8C</color>
+    <color name="mode_pill_text">#FFC97C</color>
+    <color name="chevron">#6E6150</color>
+    <color name="switch_sub">#8E8272</color>
+    <color name="step_text">#D8B072</color>
+    <color name="hint_text">#756A5B</color>
+    <color name="cta_stop_text">#FF9D92</color>
+    <color name="btn_soft_text">#FFC97C</color>
+    <color name="btn_ghost_text">#E6DDD0</color>
+    <color name="btn_danger_text">#FF9D92</color>
+    <color name="card_title">#F2ECE2</color>
+    <color name="card_sub">#948776</color>
+    <color name="switch_title">#F0E8DB</color>
+    <color name="action_icon">#A79B8B</color>
+
+    <!-- Launcher icon background. Kept dark on purpose: the adaptive icon
+         pairs it with a white foreground. -->
     <color name="ic_launcher_background">#171412</color>
 </resources>
