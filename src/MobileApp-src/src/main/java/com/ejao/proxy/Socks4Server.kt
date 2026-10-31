@@ -13,21 +13,16 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
-import kotlinx.coroutines.withContext
+import java.io.BufferedInputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
-import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
-import java.net.SocketTimeoutException
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -48,8 +43,8 @@ class Socks4Server(
     @Volatile private var cellularNetwork: Network? = null
     private var netCallback: ConnectivityManager.NetworkCallback? = null
 
-    private val socketRcvBuf = 512 * 1024
-    private val socketSndBuf = 512 * 1024
+    private val socketRcvBuf = 4 * 1024 * 1024
+    private val socketSndBuf = 1 * 1024 * 1024
     private val tunnelIdleTimeoutMs = 100_000
     private val tunnelCount = AtomicInteger(0)
 
@@ -63,6 +58,7 @@ class Socks4Server(
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 cellularNetwork = network
+                EgressManager.noteNetwork(network)
                 onLog("SOCKS4 bound to cellular network: $network")
             }
             override fun onLost(network: Network) {
@@ -84,9 +80,9 @@ class Socks4Server(
         }
     }
 
-    private fun tuneSocket(sock: Socket) {
-        runCatching { sock.setReceiveBufferSize(socketRcvBuf) }
-        runCatching { sock.setSendBufferSize(socketSndBuf) }
+    private fun pickNet(host: String? = null): Network? {
+        cellularNetwork?.let { return it }
+        return EgressManager.pickNet(cm, host)
     }
 
     fun start() {
@@ -115,7 +111,8 @@ class Socks4Server(
         try {
             val ss = ServerSocket()
             ss.reuseAddress = true
-            ss.bind(InetSocketAddress("0.0.0.0", port))
+            runCatching { ss.setReceiveBufferSize(socketRcvBuf) }
+            ss.bind(InetSocketAddress("0.0.0.0", port), 1024)
             serverSocket = ss
             while (running.get()) {
                 val client = try {
@@ -124,6 +121,8 @@ class Socks4Server(
                     break
                 }
                 client.tcpNoDelay = true
+                runCatching { client.setReceiveBufferSize(socketRcvBuf) }
+                runCatching { client.setSendBufferSize(socketSndBuf) }
                 scope.launch { handleClient(client) }
             }
         } catch (e: Exception) {
@@ -137,7 +136,7 @@ class Socks4Server(
         val meteredOut = CountingOutputStream(client.getOutputStream())
         try {
             client.soTimeout = 300000
-            val input = DataInputStream(meteredIn)
+            val input = DataInputStream(BufferedInputStream(meteredIn, 8192))
             val output = DataOutputStream(meteredOut)
 
             val version = input.readUnsignedByte()
@@ -192,12 +191,6 @@ class Socks4Server(
         return String(out.toByteArray(), Charsets.ISO_8859_1)
     }
 
-    private fun resolve(host: String, net: Network?): List<InetAddress> {
-        return EgressManager.resolve(host, net)
-    }
-
-    private fun pickNet(host: String? = null): Network? = EgressManager.pickNet(cm, host)
-
     private suspend fun handleConnect(
         client: Socket,
         input: DataInputStream,
@@ -214,63 +207,34 @@ class Socks4Server(
             val t0 = System.currentTimeMillis()
             try {
                 val net = pickNet(target)
-                val addrs = withContext(proxyDispatcher) { resolve(target, net) }
-                var up: Socket? = null
                 var lastErr: String? = null
-                for (a in addrs) {
-                    val sock = Socket()
-                    try {
-                        net?.bindSocket(sock)
-                        sock.connect(InetSocketAddress(a, targetPort), 8000)
-                        sock.tcpNoDelay = true
-                        sock.soTimeout = tunnelIdleTimeoutMs
-                        tuneSocket(sock)
-                        up = sock
-                        break
-                    } catch (e: Exception) {
-                        runCatching { sock.close() }
-                        lastErr = e.message
-                    }
+                var up: Socket? = null
+                try {
+                    up = Dialer.connect(target, targetPort, net, socketRcvBuf, socketSndBuf)
+                } catch (e: Exception) {
+                    lastErr = e.message
                 }
                 if (up == null) {
                     val fresh = NetworkUtils.pickCellular(cm, null)
                     if (fresh != null && fresh != net) {
-                        val freshAddrs = runCatching { withContext(proxyDispatcher) { resolve(target, fresh) } }.getOrNull().orEmpty()
-                        for (a in freshAddrs) {
-                            val sock = Socket()
-                            try {
-                                fresh.bindSocket(sock)
-                                sock.connect(InetSocketAddress(a, targetPort), 8000)
-                                sock.tcpNoDelay = true
-                                sock.soTimeout = tunnelIdleTimeoutMs
-                                tuneSocket(sock)
-                                up = sock
-                                break
-                            } catch (e: Exception) {
-                                runCatching { sock.close() }
-                                lastErr = e.message
-                            }
+                        up = try {
+                            Dialer.connect(target, targetPort, fresh, socketRcvBuf, socketSndBuf)
+                        } catch (e: Exception) {
+                            lastErr = e.message
+                            null
                         }
                     }
                 }
-                if (up == null) {
-                    val defAddrs = runCatching { withContext(proxyDispatcher) { resolve(target, null) } }.getOrNull().orEmpty()
-                    for (a in defAddrs) {
-                        val sock = Socket()
-                        try {
-                            sock.connect(InetSocketAddress(a, targetPort), 8000)
-                            sock.tcpNoDelay = true
-                            sock.soTimeout = tunnelIdleTimeoutMs
-                            tuneSocket(sock)
-                            up = sock
-                            break
-                        } catch (e: Exception) {
-                            runCatching { sock.close() }
-                            lastErr = e.message
-                        }
+                if (up == null && net != null) {
+                    up = try {
+                        Dialer.connect(target, targetPort, null, socketRcvBuf, socketSndBuf)
+                    } catch (e: Exception) {
+                        lastErr = e.message
+                        null
                     }
                 }
                 if (up == null) throw IOException("could not connect to $target:$targetPort via $net : $lastErr")
+                up.soTimeout = tunnelIdleTimeoutMs
                 upstream = up
                 EgressManager.reportSuccess(target)
                 reply(output, 0x5A) // granted
