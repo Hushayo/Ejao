@@ -19,15 +19,12 @@ import java.io.BufferedOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
-import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -67,11 +64,14 @@ class HttpProxyServer(
     private var staleWatchdogJob: Job? = null
     private val STALE_TIMEOUT_MS = 2 * 60_000L
     private val poolMax = 48
-    private val poolIdleMs = 60_000L
-    private val connectTimeoutMs = 6_000
+    // Longer than the old 60s: browsers reuse origins across user think time,
+    // and a warm pooled socket skips dial + TLS setup entirely.
+    private val poolIdleMs = 120_000L
     private val readTimeoutMs = 20_000
-    private val socketRcvBuf = 512 * 1024
-    private val socketSndBuf = 512 * 1024
+    private val clientRcvBuf = 1 * 1024 * 1024
+    private val clientSndBuf = 1 * 1024 * 1024
+    private val upstreamRcvBuf = 4 * 1024 * 1024
+    private val upstreamSndBuf = 1 * 1024 * 1024
     private val clientBufSize = 64 * 1024
     private val upstreamBufSize = 64 * 1024
     private val tunnelIdleTimeoutMs = 100_000
@@ -104,6 +104,7 @@ class HttpProxyServer(
             override fun onAvailable(network: Network) {
                 cellularNetwork = network
                 lastGoodCellular = network
+                EgressManager.noteNetwork(network)
                 clearPool()
                 clearDns()
                 onLog("Bound to cellular network: $network")
@@ -167,15 +168,15 @@ class HttpProxyServer(
     }
 
     private fun tuneSocket(sock: Socket) {
-        runCatching { sock.setReceiveBufferSize(socketRcvBuf) }
-        runCatching { sock.setSendBufferSize(socketSndBuf) }
+        runCatching { sock.setReceiveBufferSize(clientRcvBuf) }
+        runCatching { sock.setSendBufferSize(clientSndBuf) }
     }
 
     private suspend fun runServer() {
         try {
             val ss = ServerSocket()
             ss.reuseAddress = true
-            runCatching { ss.setReceiveBufferSize(socketRcvBuf) }
+            runCatching { ss.setReceiveBufferSize(clientRcvBuf) }
             ss.bind(InetSocketAddress("0.0.0.0", port), 1024)
             serverSocket = ss
             while (running.get()) {
@@ -231,7 +232,7 @@ class HttpProxyServer(
                 }
 
                 if (isSelfHostRequest(method, target, headers)) {
-                    val keepAlive = headers.any { it.startsWith("Connection:", true) && it.contains("keep-alive", true) }
+                    val keepAlive = requestKeepAlive(parts[2], headers)
                     val (_, _, selfPath) = parseAbsoluteUri(target, headers)
                     forwardPlain(reader, output, method, goIp, panelPort, selfPath.ifEmpty { "/" }, headers, keepAlive, local = true, clientIp = clientIp)
                     if (!keepAlive) break
@@ -243,7 +244,7 @@ class HttpProxyServer(
                     writeSimpleResponse(output, 400, "Bad Request - absolute URI required")
                     break
                 }
-                val keepAlive = headers.any { it.startsWith("Connection:", true) && it.contains("keep-alive", true) }
+                val keepAlive = requestKeepAlive(parts[2], headers)
                 forwardPlain(reader, output, method, host, port, path, headers, keepAlive, clientIp = clientIp)
                 if (!keepAlive) break
             }
@@ -428,34 +429,15 @@ class HttpProxyServer(
         }
     }
 
-    private fun resolve(host: String, net: Network?): List<InetAddress> {
-        return EgressManager.resolve(host, net)
-    }
-
     private fun dial(host: String, port: Int, net: Network?): Socket? {
-        val addrs = try {
-            resolve(host, net)
+        return try {
+            val up = Dialer.connect(host, port, net, upstreamRcvBuf, upstreamSndBuf)
+            up.soTimeout = readTimeoutMs
+            up
         } catch (e: Exception) {
-            onLog("HTTP DNS failed for $host via $net : ${e.message}")
-            return null
+            onLog("HTTP upstream connect failed: $host:$port via $net : ${e.message}")
+            null
         }
-        var lastErr: String? = null
-        for (addr in addrs) {
-            val up = Socket()
-            try {
-                net?.bindSocket(up)
-                up.soTimeout = readTimeoutMs
-                up.tcpNoDelay = true
-                tuneSocket(up)
-                up.connect(InetSocketAddress(addr, port), connectTimeoutMs)
-                return up
-            } catch (e: Exception) {
-                runCatching { up.close() }
-                lastErr = e.message
-            }
-        }
-        onLog("HTTP upstream connect failed: $host:$port -> $addrs via $net : $lastErr")
-        return null
     }
 
     private fun acquireUpstream(host: String, port: Int, forceFresh: Boolean = false, local: Boolean = false): Socket {
@@ -830,6 +812,27 @@ class HttpProxyServer(
 
 
     private val selfHosts = setOf(goIp.lowercase(), "127.0.0.1", "localhost", "[::1]")
+
+    /**
+     * Persistent-connection decision. HTTP/1.1 keeps connections alive by
+     * default, and browsers signal proxy keep-alive with `Proxy-Connection:`
+     * rather than `Connection:` - the old check ignored both, closing the
+     * client socket after every response and paying a fresh local handshake
+     * on each request.
+     */
+    private fun requestKeepAlive(version: String, headers: List<String>): Boolean {
+        var close = false
+        var keepAlive = false
+        for (h in headers) {
+            if (!h.startsWith("Connection:", true) && !h.startsWith("Proxy-Connection:", true)) continue
+            val v = h.substringAfter(':').lowercase(Locale.US)
+            if ("close" in v) close = true
+            if ("keep-alive" in v) keepAlive = true
+        }
+        if (close) return false
+        if (keepAlive) return true
+        return version.equals("HTTP/1.1", true)
+    }
 
     private fun isSelfHostRequest(method: String, target: String, headers: List<String>): Boolean {
         if (method == "CONNECT") return false

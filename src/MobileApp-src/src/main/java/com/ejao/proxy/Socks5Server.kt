@@ -15,6 +15,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import java.io.BufferedInputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.IOException
@@ -95,6 +96,11 @@ class Socks5Server(
 
     private val socketRcvBuf = 4 * 1024 * 1024
     private val socketSndBuf = 1 * 1024 * 1024
+    // Client side is the WiFi Direct hop (sub-ms RTT): 1MB is plenty, and the
+    // listener buffer is what accepted sockets inherit, so it is set before
+    // bind rather than per accept.
+    private val clientRcvBuf = 1 * 1024 * 1024
+    private val clientSndBuf = 1 * 1024 * 1024
     // IPTOS_LOWDELAY: best-effort DSCP hint for real-time traffic. Stacks and
     // carriers that ignore it lose nothing; the ones that honour it stop
     // queueing game packets behind bulk downloads on the same bearer.
@@ -123,6 +129,7 @@ class Socks5Server(
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 cellularNetwork = network
+                EgressManager.noteNetwork(network)
                 // New egress: every UDP socket bound to the old one has to be
                 // rebuilt (see egressEpoch), otherwise game packets keep
                 // going into a blackholed socket until the 5min sweep.
@@ -149,12 +156,6 @@ class Socks5Server(
                 onLog("WARNING: no cellular network available - outbound sockets use the default route")
             }
         }
-    }
-
-    private fun tuneSocket(sock: Socket) {
-        runCatching { sock.setReceiveBufferSize(socketRcvBuf) }
-        runCatching { sock.setSendBufferSize(socketSndBuf) }
-        runCatching { sock.trafficClass = socketTrafficClass }
     }
 
     private val udpSessions = ConcurrentHashMap<String, UdpSession>()
@@ -239,7 +240,10 @@ class Socks5Server(
         try {
             val ss = ServerSocket()
             ss.reuseAddress = true
-            ss.bind(InetSocketAddress("0.0.0.0", port))
+            runCatching { ss.setReceiveBufferSize(clientRcvBuf) }
+            // Default backlog (50) drops SYNs when a browser opens dozens of
+            // connections at once, and every drop costs a 1s client retry.
+            ss.bind(InetSocketAddress("0.0.0.0", port), 1024)
             serverSocket = ss
             while (running.get()) {
                 val client = try {
@@ -248,6 +252,8 @@ class Socks5Server(
                     break
                 }
                 client.tcpNoDelay = true
+                runCatching { client.setReceiveBufferSize(clientRcvBuf) }
+                runCatching { client.setSendBufferSize(clientSndBuf) }
                 scope.launch { handleTcpClient(client) }
             }
         } catch (e: Exception) {
@@ -402,7 +408,10 @@ class Socks5Server(
         val meteredOut = CountingOutputStream(client.getOutputStream())
         try {
             client.soTimeout = 300000
-            val input = DataInputStream(meteredIn)
+            // Buffered so the handshake costs one or two reads instead of a
+            // syscall per byte; the pump below keeps reading through the same
+            // stream, so no early client bytes are lost.
+            val input = DataInputStream(BufferedInputStream(meteredIn, 8192))
             val output = DataOutputStream(meteredOut)
 
             val version = input.readUnsignedByte()
@@ -448,29 +457,12 @@ class Socks5Server(
     }
 
     private fun pickNet(host: String? = null): Network? {
-        val cell = NetworkUtils.pickCellular(cm, cellularNetwork)
-        val cellular = cell != null && runCatching {
-            cm.getNetworkCapabilities(cell)?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true
-        }.getOrDefault(false)
-        if (cellular) return cell
-        // Fall back only if no validated cellular interface exists.
-        val nets = runCatching { cm.allNetworks }.getOrNull().orEmpty()
-        val directCell = nets.firstOrNull { n ->
-            runCatching {
-                val caps = cm.getNetworkCapabilities(n)
-                caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) &&
-                    caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            }.getOrDefault(false)
-        }
-        if (directCell != null) return directCell
+        // The ConnectivityManager callback keeps this pointer truthful;
+        // trusting it removes 2-4 binder round-trips (getNetworkCapabilities /
+        // allNetworks) from every new connection - all of which used to
+        // serialize on the ConnectivityManager lock under a burst of dials.
+        cellularNetwork?.let { return it }
         return EgressManager.pickNet(cm, host)
-    }
-
-    private fun isValidCellular(n: Network?): Boolean {
-        if (n == null) return false
-        val caps = runCatching { cm.getNetworkCapabilities(n) }.getOrNull() ?: return false
-        return caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) &&
-            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
     }
 
     private suspend fun handleConnect(
@@ -491,63 +483,40 @@ class Socks5Server(
             val t0 = System.currentTimeMillis()
             try {
                 val net = pickNet(target)
-                val addrs = withContext(proxyDispatcher) { resolve(target, net) }
-                var up: Socket? = null
                 var lastErr: String? = null
-                for (a in addrs) {
-                    val sock = Socket()
-                    try {
-                        net?.bindSocket(sock)
-                        sock.connect(InetSocketAddress(a, targetPort), 8000)
-                        sock.tcpNoDelay = true
-                        sock.soTimeout = tunnelIdleTimeoutMs
-                        tuneSocket(sock)
-                        up = sock
-                        break
-                    } catch (e: Exception) {
-                        runCatching { sock.close() }
-                        lastErr = e.message
-                    }
+                var up: Socket? = null
+                try {
+                    up = Dialer.connect(
+                        target, targetPort, net, socketRcvBuf, socketSndBuf, socketTrafficClass
+                    )
+                } catch (e: Exception) {
+                    lastErr = e.message
                 }
                 if (up == null) {
                     val fresh = NetworkUtils.pickCellular(cm, null)
                     if (fresh != null && fresh != net) {
-                        val freshAddrs = runCatching { withContext(proxyDispatcher) { resolve(target, fresh) } }.getOrNull().orEmpty()
-                        for (a in freshAddrs) {
-                            val sock = Socket()
-                            try {
-                                fresh.bindSocket(sock)
-                                sock.connect(InetSocketAddress(a, targetPort), 8000)
-                                sock.tcpNoDelay = true
-                                sock.soTimeout = tunnelIdleTimeoutMs
-                                tuneSocket(sock)
-                                up = sock
-                                break
-                            } catch (e: Exception) {
-                                runCatching { sock.close() }
-                                lastErr = e.message
-                            }
+                        up = try {
+                            Dialer.connect(
+                                target, targetPort, fresh, socketRcvBuf, socketSndBuf, socketTrafficClass
+                            )
+                        } catch (e: Exception) {
+                            lastErr = e.message
+                            null
                         }
                     }
                 }
-                if (up == null) {
-                    val defAddrs = runCatching { withContext(proxyDispatcher) { resolve(target, null) } }.getOrNull().orEmpty()
-                    for (a in defAddrs) {
-                        val sock = Socket()
-                        try {
-                            sock.connect(InetSocketAddress(a, targetPort), 8000)
-                            sock.tcpNoDelay = true
-                            sock.soTimeout = tunnelIdleTimeoutMs
-                            tuneSocket(sock)
-                            up = sock
-                            break
-                        } catch (e: Exception) {
-                            runCatching { sock.close() }
-                            lastErr = e.message
-                        }
+                if (up == null && net != null) {
+                    up = try {
+                        Dialer.connect(
+                            target, targetPort, null, socketRcvBuf, socketSndBuf, socketTrafficClass
+                        )
+                    } catch (e: Exception) {
+                        lastErr = e.message
+                        null
                     }
                 }
                 if (up == null) throw IOException("could not connect to $target:$targetPort via $net : $lastErr")
+                up.soTimeout = tunnelIdleTimeoutMs
                 upstream = up
                 EgressManager.reportSuccess(target)
                 replySuccess(output)
