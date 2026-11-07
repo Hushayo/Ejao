@@ -143,6 +143,13 @@ object EgressManager {
         rememberNet(net)
     }
 
+    /** Called when a network is lost: the 1s fast path and the cached net
+     *  must not hand out a blackholed network for new socket bindings. */
+    fun forgetNetwork(net: Network) {
+        if (fastNet == net) { fastNet = null; fastNetAt = 0L }
+        if (cachedNet == net) { cachedNet = null; cachedNetTime = 0L }
+    }
+
     private fun rememberNet(n: Network?) {
         fastNet = n
         fastNetAt = System.currentTimeMillis()

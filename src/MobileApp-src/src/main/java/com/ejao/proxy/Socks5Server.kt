@@ -124,7 +124,10 @@ class Socks5Server(
     private val udpSendFailMinCount = 3
     private val udpSendFailMinMs = 1_500L
     // Bounds queued outbound datagrams when sendto blocks on a stalled link.
-    private val udpInflightSem = Semaphore(64)
+    // Sized to the send pool (datagramThreads): a packet that can't start
+    // sending immediately is dropped, not queued - a queued game packet behind
+    // a blocked sendto costs seconds of ping, a dropped one costs one retransmit.
+    private val udpInflightSem = Semaphore(32)
 
     private val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
@@ -145,6 +148,7 @@ class Socks5Server(
                 onLog("Bound to cellular network: $network")
             }
             override fun onLost(network: Network) {
+                EgressManager.forgetNetwork(network)
                 if (cellularNetwork == network) {
                     cellularNetwork = null
                     egressEpoch++
@@ -168,6 +172,12 @@ class Socks5Server(
 
     private val udpSessions = ConcurrentHashMap<String, UdpSession>()
     private val lastIpv6DropLogMs = AtomicLong(0L)
+    // Source port to reuse when a session is rebuilt (network handover, stall,
+    // repeated sendto failures). Games key the client on (ip, port): a new
+    // source port looks like a new connection, so the server goes silent on
+    // the old session and ping spikes for seconds. Rebinding the same port on
+    // the fresh network keeps the game server's view of us stable.
+    private val rebuildPorts = ConcurrentHashMap<String, Int>()
 
     // Bumped whenever the cellular egress appears or goes away. Sessions
     // remember the epoch they were bound in; a mismatch means the socket is
@@ -181,7 +191,7 @@ class Socks5Server(
         // packets have we sent since then without a single reply.
         @Volatile var lastReplyAt = System.currentTimeMillis()
         @Volatile var lastSendAt = 0L
-        @Volatile var sentSinceReply = 0L
+        val sentSinceReply = AtomicLong(0L)
         @Volatile var lastStallAt = 0L
         // Fallback ladder: the resolved address list and the one in use.
         // dstHost is null for raw IPv4 targets (nothing to re-resolve).
@@ -377,7 +387,7 @@ class Socks5Server(
         val now = System.currentTimeMillis()
         // A silent target needs the full stall ladder (log + rebuild +
         // re-resolve), so that rare case stays on the coroutine path.
-        if (session.sentSinceReply >= udpStallMinPackets &&
+        if (session.sentSinceReply.get() >= udpStallMinPackets &&
             now - session.lastReplyAt >= udpStallMs &&
             now - session.lastStallAt >= udpStallMs
         ) return false
@@ -387,7 +397,7 @@ class Socks5Server(
         val dst = dest
         session.lastActivity = now
         session.lastSendAt = now
-        session.sentSinceReply++
+        session.sentSinceReply.incrementAndGet()
         session.tx.addAndGet(payloadLen.toLong())
         TrafficStats.addTx(payloadLen.toLong())
         ClientUsage.add(clientIp, payloadLen.toLong())
@@ -424,6 +434,7 @@ class Socks5Server(
         if (n < udpSendFailMinCount || now - session.firstSendFailAt < udpSendFailMinMs) return
         EgressManager.reportFailure(host)
         if (session.clientKey.isNotEmpty() && udpSessions.remove(session.clientKey, session)) {
+            rememberRebuildPort(session.clientKey, session.socket)
             runCatching { session.socket.close() }
             onLog("UDP send fail $host via ${session.boundNet}: ${e.message} - session rebuilt")
         }
@@ -716,6 +727,7 @@ class Socks5Server(
             val stale = sessionNow
             if (stale != null && stale.boundEpoch != egressEpoch) {
                 if (udpSessions.remove(clientKey, stale)) {
+                    rememberRebuildPort(clientKey, stale.socket)
                     runCatching { stale.socket.close() }
                 }
                 sessionNow = null
@@ -728,14 +740,9 @@ class Socks5Server(
             var isNew = false
             if (sessionNow == null) {
                 enforceUdpSessionCap()
+                val keepPort = rebuildPorts.remove(clientKey)
                 val fwd = try {
-                    DatagramSocket().also {
-                        net?.bindSocket(it)
-                        it.soTimeout = 1000
-                        runCatching { it.receiveBufferSize = socketRcvBuf }
-                        runCatching { it.sendBufferSize = socketSndBuf }
-                        runCatching { it.trafficClass = socketTrafficClass }
-                    }
+                    createForwardSocket(net, keepPort)
                 } catch (e: Exception) {
                     onLog("UDP session create fail: ${e.message}")
                     return
@@ -779,7 +786,7 @@ class Socks5Server(
                 // dispatch, no network query) until the key stops matching.
                 session.dest = UdpDest(dstIpKey, dstHostKey, dstPort, dstAddr, dstHost)
                 session.lastSendAt = System.currentTimeMillis()
-                session.sentSinceReply++
+                session.sentSinceReply.incrementAndGet()
                 try {
                     session.socket.send(DatagramPacket(payload, payload.size, dstAddr, dstPort))
                     session.sendFails.set(0)
@@ -849,14 +856,14 @@ class Socks5Server(
      * nothing when replies are flowing (sentSinceReply resets on each reply).
      */
     private fun advanceIfStalled(session: UdpSession, dstHost: String) {
-        val sent = session.sentSinceReply
+        val sent = session.sentSinceReply.get()
         if (sent < udpStallMinPackets) return
         val now = System.currentTimeMillis()
         if (now - session.lastReplyAt < udpStallMs) return
         if (now - session.lastStallAt < udpStallMs) return
 
         session.lastStallAt = now
-        session.sentSinceReply = 0
+        session.sentSinceReply.set(0)
         session.lastReplyAt = now
         TrafficStats.udpStalls.incrementAndGet()
 
@@ -865,6 +872,7 @@ class Socks5Server(
         if (session.dstHost == null) {
             onLog("UDP stall: $sent packets to raw IP $dstHost with no reply in ${udpStallMs}ms - rebuilding socket")
             if (session.clientKey.isNotEmpty() && udpSessions.remove(session.clientKey, session)) {
+                rememberRebuildPort(session.clientKey, session.socket)
                 runCatching { session.socket.close() }
             }
             return
@@ -901,6 +909,46 @@ class Socks5Server(
         if (udpSessions.size < maxUdpSessions) return
         val oldest = udpSessions.entries.minByOrNull { it.value.lastActivity } ?: return
         if (udpSessions.remove(oldest.key, oldest.value)) runCatching { oldest.value.socket.close() }
+    }
+
+    /** Stash the local port of a torn-down session so its rebuild can rebind
+     *  the same source port (see rebuildPorts). Called before the socket
+     *  closes; a closed socket still reports its port but don't rely on it. */
+    private fun rememberRebuildPort(clientKey: String, socket: DatagramSocket) {
+        val port = runCatching { socket.localPort }.getOrNull() ?: return
+        if (port <= 0) return
+        rebuildPorts[clientKey] = port
+        if (rebuildPorts.size > 256) rebuildPorts.clear()
+    }
+
+    /** Forward socket for a new session. With [keepPort] set, rebind that
+     *  source port on the new network first - the game server tracks the
+     *  client on (ip, port), so keeping the port means a rebuild is invisible
+     *  to it and ping doesn't spike while the old session goes quiet. Falls
+     *  back to an ephemeral port when the bind loses a same-network race. */
+    private fun createForwardSocket(net: Network?, keepPort: Int?): DatagramSocket {
+        fun configure(s: DatagramSocket) {
+            s.soTimeout = 1000
+            runCatching { s.receiveBufferSize = socketRcvBuf }
+            runCatching { s.sendBufferSize = socketSndBuf }
+            runCatching { s.trafficClass = socketTrafficClass }
+        }
+        if (keepPort != null && keepPort > 0) {
+            val s = DatagramSocket(null)
+            s.reuseAddress = true
+            net?.bindSocket(s)
+            try {
+                s.bind(InetSocketAddress(keepPort))
+                configure(s)
+                return s
+            } catch (_: Exception) {
+                runCatching { s.close() }
+            }
+        }
+        val s = DatagramSocket()
+        net?.bindSocket(s)
+        configure(s)
+        return s
     }
 
     private fun parseIpv4LiteralFast(host: String): InetAddress? {
@@ -978,7 +1026,7 @@ class Socks5Server(
                 }
                 session.lastActivity = System.currentTimeMillis()
                 session.lastReplyAt = session.lastActivity
-                session.sentSinceReply = 0
+                session.sentSinceReply.set(0)
                 val src = pkt.address
                 val srcPort = pkt.port
                 val dataLen = pkt.length
