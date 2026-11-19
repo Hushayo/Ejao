@@ -68,6 +68,17 @@ class Socks5Server(
     private val ctlExecutor = namedPool(ctlThreads, "ejao-ctl")
     private val dnsExecutor = namedPool(dnsThreads, "ejao-dns")
     private val datagramExecutor = namedPool(datagramThreads, "ejao-udp")
+    // Handshakes live here, not on the control pool. A client that opens the
+    // TCP and then stalls (dead PC, dropped WiFi Direct hop, port scanner)
+    // used to pin one of the 16 control threads until the 300s timeout, and
+    // 16 of those starved the accept loop itself - Windows reports every
+    // later connect as 10060 "proxy did not answer". Elastic pool + short
+    // handshake deadline keeps accept() always runnable.
+    private val hsExecutor = Executors.newCachedThreadPool { r ->
+        Thread(r, "ejao-hs").apply { isDaemon = true }
+    }
+    private val hsDispatcher = hsExecutor.asCoroutineDispatcher()
+    private val hsScope = CoroutineScope(SupervisorJob() + hsDispatcher)
     private val dataExecutor = Executors.newCachedThreadPool { r ->
         Thread(r, "ejao-io").apply { isDaemon = true }
     }
@@ -106,7 +117,12 @@ class Socks5Server(
     // queueing game packets behind bulk downloads on the same bearer.
     private val socketTrafficClass = 0x10
 
-    private val tunnelIdleTimeoutMs = 100_000
+    // Handshake deadline only: once a tunnel is up both sockets run with
+    // SO_TIMEOUT 0 (see handleConnect). The old 100s upstream read deadline
+    // tore down healthy but quiet tunnels - browsers keep sockets idle for
+    // minutes, then the next request hit a dead tunnel (the "random"
+    // disconnect). Liveness is now TCP keepalive + EOF, not a stopwatch.
+    private val handshakeTimeoutMs = 15_000
     private val tunnelCount = AtomicInteger(0)
 
     // UDP "Happy Eyeballs". A datagram can't fail loudly, so a target that
@@ -242,78 +258,115 @@ class Socks5Server(
         scope.cancel()
         dataScope.cancel()
         dgramScope.cancel()
+        hsScope.cancel()
         runCatching { ctlExecutor.shutdownNow() }
         runCatching { dnsExecutor.shutdownNow() }
         runCatching { datagramExecutor.shutdownNow() }
         runCatching { dataExecutor.shutdownNow() }
+        runCatching { hsExecutor.shutdownNow() }
     }
 
     private suspend fun runTcpServer() {
-        try {
-            val ss = ServerSocket()
-            ss.reuseAddress = true
-            runCatching { ss.setReceiveBufferSize(clientRcvBuf) }
-            // Default backlog (50) drops SYNs when a browser opens dozens of
-            // connections at once, and every drop costs a 1s client retry.
-            ss.bind(InetSocketAddress("0.0.0.0", port), 1024)
-            serverSocket = ss
-            while (running.get()) {
-                val client = try {
-                    ss.accept()
-                } catch (e: Exception) {
-                    break
+        var fails = 0
+        while (running.get()) {
+            try {
+                val ss = ServerSocket()
+                ss.reuseAddress = true
+                runCatching { ss.setReceiveBufferSize(clientRcvBuf) }
+                // Default backlog (50) drops SYNs when a browser opens dozens of
+                // connections at once, and every drop costs a 1s client retry.
+                ss.bind(InetSocketAddress("0.0.0.0", port), 1024)
+                serverSocket = ss
+                fails = 0
+                while (running.get()) {
+                    val client = try {
+                        ss.accept()
+                    } catch (e: Exception) {
+                        if (!running.get()) return
+                        // Listener lost mid-life (fd revoked on a handover,
+                        // EMFILE burst): rebind instead of leaving 1080 dead
+                        // for the rest of the session (client sees 10061).
+                        onLog("TCP accept failed: ${e.message} - rebinding")
+                        break
+                    }
+                    client.tcpNoDelay = true
+                    runCatching { client.keepAlive = true }
+                    runCatching { client.setReceiveBufferSize(clientRcvBuf) }
+                    runCatching { client.setSendBufferSize(clientSndBuf) }
+                    hsScope.launch { handleTcpClient(client) }
                 }
-                client.tcpNoDelay = true
-                runCatching { client.setReceiveBufferSize(clientRcvBuf) }
-                runCatching { client.setSendBufferSize(clientSndBuf) }
-                scope.launch { handleTcpClient(client) }
+            } catch (e: Exception) {
+                if (!running.get()) return
+                fails++
+                onLog("TCP listen on $port failed: ${e.message} (retry $fails)")
+            } finally {
+                runCatching { serverSocket?.close() }
+                serverSocket = null
             }
-        } catch (e: Exception) {
-            if (running.get()) onLog("TCP server error: $e")
+            if (!running.get()) return
+            // Fast retry after a rebind, backoff while the port stays busy.
+            delay(if (fails == 0) 200L else minOf(5_000L, 250L * fails))
         }
     }
 
     private suspend fun runUdpServer() {
-        try {
-            val sock = DatagramSocket(null)
-            sock.reuseAddress = true
-            runCatching { sock.receiveBufferSize = 4 * 1024 * 1024 }
-            runCatching { sock.sendBufferSize = socketSndBuf }
-            runCatching { sock.trafficClass = socketTrafficClass }
-            sock.bind(InetSocketAddress("0.0.0.0", port))
-            udpSocket = sock
-            val buf = ByteArray(65535)
-            // One client sends the whole game flow, so cache its strings: the
-            // hot path must not allocate an IP string + session key per packet.
-            var lastAddr: InetAddress? = null
-            var lastPort = -1
-            var lastIp = ""
-            var lastKey = ""
-            while (running.get()) {
-                val pkt = DatagramPacket(buf, buf.size)
-                try {
-                    sock.receive(pkt)
-                } catch (e: Exception) {
-                    break
+        var fails = 0
+        while (running.get()) {
+            try {
+                val sock = DatagramSocket(null)
+                sock.reuseAddress = true
+                runCatching { sock.receiveBufferSize = 4 * 1024 * 1024 }
+                runCatching { sock.sendBufferSize = socketSndBuf }
+                runCatching { sock.trafficClass = socketTrafficClass }
+                sock.bind(InetSocketAddress("0.0.0.0", port))
+                udpSocket = sock
+                fails = 0
+                val buf = ByteArray(65535)
+                // One client sends the whole game flow, so cache its strings: the
+                // hot path must not allocate an IP string + session key per packet.
+                var lastAddr: InetAddress? = null
+                var lastPort = -1
+                var lastIp = ""
+                var lastKey = ""
+                while (running.get()) {
+                    val pkt = DatagramPacket(buf, buf.size)
+                    try {
+                        sock.receive(pkt)
+                    } catch (e: Exception) {
+                        if (!running.get()) return
+                        // Same self-heal as the TCP listener: one revoked fd
+                        // (handover, EMFILE) must not kill UDP for the session.
+                        onLog("UDP receive failed: ${e.message} - rebinding")
+                        break
+                    }
+                    val clientAddr = pkt.address ?: continue
+                    val clientPort = pkt.port
+                    if (clientAddr != lastAddr || clientPort != lastPort) {
+                        lastAddr = clientAddr
+                        lastPort = clientPort
+                        lastIp = runCatching { clientAddr.hostAddress }.getOrNull() ?: ""
+                        lastKey = "$lastIp:$clientPort"
+                    }
+                    // Steady-state game traffic skips the coroutine path; only its
+                    // blocking sendto is handed to the pool (see udpFastPath).
+                    if (udpFastPath(lastIp, lastKey, buf, pkt.length)) continue
+                    val dataCopy = buf.copyOf(pkt.length)
+                    // Anything unusual gets its own pool thread: a datagram arrival
+                    // must never wait behind a long-lived blocking read.
+                    dgramScope.launch { handleUdpPacket(sock, clientAddr, clientPort, dataCopy) }
                 }
-                val clientAddr = pkt.address ?: continue
-                val clientPort = pkt.port
-                if (clientAddr != lastAddr || clientPort != lastPort) {
-                    lastAddr = clientAddr
-                    lastPort = clientPort
-                    lastIp = runCatching { clientAddr.hostAddress }.getOrNull() ?: ""
-                    lastKey = "$lastIp:$clientPort"
-                }
-                // Steady-state game traffic skips the coroutine path; only its
-                // blocking sendto is handed to the pool (see udpFastPath).
-                if (udpFastPath(lastIp, lastKey, buf, pkt.length)) continue
-                val dataCopy = buf.copyOf(pkt.length)
-                // Anything unusual gets its own pool thread: a datagram arrival
-                // must never wait behind a long-lived blocking read.
-                dgramScope.launch { handleUdpPacket(sock, clientAddr, clientPort, dataCopy) }
+            } catch (e: Exception) {
+                if (!running.get()) return
+                fails++
+                onLog("UDP listen on $port failed: ${e.message} (retry $fails)")
+            } finally {
+                runCatching { udpSocket?.close() }
+                udpSocket = null
+                udpSessions.values.forEach { runCatching { it.socket.close() } }
+                udpSessions.clear()
             }
-        } catch (e: Exception) {
-            if (running.get()) onLog("UDP server error: $e")
+            if (!running.get()) return
+            delay(if (fails == 0) 200L else minOf(5_000L, 250L * fails))
         }
     }
 
@@ -453,7 +506,7 @@ class Socks5Server(
         val meteredIn = CountingInputStream(client.getInputStream())
         val meteredOut = CountingOutputStream(client.getOutputStream())
         try {
-            client.soTimeout = 300000
+            client.soTimeout = handshakeTimeoutMs
             // Buffered so the handshake costs one or two reads instead of a
             // syscall per byte; the pump below keeps reading through the same
             // stream, so no early client bytes are lost.
@@ -524,6 +577,9 @@ class Socks5Server(
         // the handshake thread is released as soon as this suspends.
         withContext(dataDispatcher) {
             var upstream: Socket? = null
+            // SOCKS replies are exactly once: a late 0x05 after the 0x00 the
+            // client already accepted is garbage on its TLS stream.
+            var replied = false
             tunnelCount.incrementAndGet()
             AppState.tcpTunnels.value = tunnelCount.get()
             val t0 = System.currentTimeMillis()
@@ -562,10 +618,16 @@ class Socks5Server(
                     }
                 }
                 if (up == null) throw IOException("could not connect to $target:$targetPort via $net : $lastErr")
-                up.soTimeout = tunnelIdleTimeoutMs
+                // No read deadline on the tunnel in either direction: a quiet
+                // but healthy socket must survive until the peer really goes
+                // away (EOF / RST, or the kernel's keepalive probes).
+                up.keepAlive = true
+                up.soTimeout = 0
                 upstream = up
                 EgressManager.reportSuccess(target)
+                runCatching { client.soTimeout = 0 }
                 replySuccess(output)
+                replied = true
                 onLog("TCP $target:$targetPort")
                 val tx = AtomicLong(0L)
                 val rx = AtomicLong(0L)
@@ -586,7 +648,7 @@ class Socks5Server(
             } catch (e: Exception) {
                 EgressManager.reportFailure(target)
                 onLog("TCP fail $target:$targetPort: ${e.message}")
-                runCatching { replyError(output, 0x05) }
+                if (!replied) runCatching { replyError(output, 0x05) }
             } finally {
                 runCatching { client.close() }
                 runCatching { upstream?.close() }
@@ -1058,7 +1120,13 @@ class Socks5Server(
         var total = 0L
         try {
             while (running.get()) {
-                val n = src.read(buf)
+                val n = try {
+                    src.read(buf)
+                } catch (_: SocketTimeoutException) {
+                    // Idle is not dead: an SO_TIMEOUT (only ever set on the
+                    // handshake now) means come back and wait, not close.
+                    continue
+                }
                 if (n <= 0) break
                 dst.write(buf, 0, n)
                 total += n
