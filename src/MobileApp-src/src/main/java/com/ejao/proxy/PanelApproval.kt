@@ -32,10 +32,13 @@ object PanelApproval {
      * restart the proxy. Approved config changes use [applyFields] instead.
      */
     var onRestart: (() -> Unit)? = null
+    var onIdle: ((Boolean) -> Unit)? = null
 
     fun submit(fields: Map<String, String>): Request {
         // Replace any existing pending request, even if younger than the
         // window: the newest submit is the owner's latest intent.
+        val current = _pending.value
+        if (current != null && System.currentTimeMillis() - current.submittedAt <= APPROVE_WINDOW_MS) return current
         val r = Request(counter.incrementAndGet(), fields, System.currentTimeMillis())
         _pending.value = r
         return r
@@ -43,15 +46,21 @@ object PanelApproval {
 
     fun current(): Request? = _pending.value
 
-    fun approve(context: Context): Boolean {
+    fun approve(context: Context, expectedId: Long? = null): Boolean {
         return try {
             val r = _pending.value ?: return false
+            if (expectedId != null && r.id != expectedId) return false
             if (System.currentTimeMillis() - r.submittedAt > APPROVE_WINDOW_MS) {
                 _pending.value = null
                 return false
             }
             if (r.fields["action"] == "restart") {
                 runCatching { onRestart?.invoke() }
+                _pending.value = null
+                return true
+            }
+            if (r.fields["action"] == "idle" || r.fields["action"] == "resume") {
+                runCatching { onIdle?.invoke(r.fields["action"] == "idle") }
                 _pending.value = null
                 return true
             }

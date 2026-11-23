@@ -32,20 +32,23 @@ object KeepAlive {
                 val cfg = runCatching { ConfigManager.load(context) }.getOrDefault(ConfigManager.defaultConfig)
                 val url = cfg.keepaliveUrl.takeIf { it.isNotBlank() } ?: DEFAULT_URL
                 val interval = cfg.keepaliveIntervalMs.coerceAtLeast(MIN_INTERVAL_MS)
+                var conn: HttpURLConnection? = null
                 try {
-                    val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    conn = (URL(url).openConnection() as HttpURLConnection).apply {
                         requestMethod = "HEAD"
                         connectTimeout = 8000
                         readTimeout = 8000
                         instanceFollowRedirects = true
                         setRequestProperty("User-Agent", "Mozilla/5.0")
                     }
-                    conn.responseCode
-                    conn.disconnect()
-                    Log.d(TAG, "ping ok (${conn.responseCode}) -> $url")
+                    val code = conn.responseCode
+                    conn.inputStream?.close()
+                    Log.d(TAG, "ping ok ($code) -> $url")
                 } catch (e: Throwable) {
                     // never let a failed ping crash or stop the loop
                     Log.d(TAG, "ping failed -> $url : ${e.message}")
+                } finally {
+                    conn?.disconnect()
                 }
                 delay(interval)
             }

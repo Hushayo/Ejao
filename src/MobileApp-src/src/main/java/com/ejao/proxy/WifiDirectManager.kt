@@ -44,7 +44,14 @@ class WifiDirectManager(private val context: Context) {
         // chars. Use the code exactly once, then the remainder of the body, so the
         // prefix never overlaps/duplicates the name. SSID is capped at 32 octets.
         val code = body.take(2).padEnd(2, 'A')
-        return ("DIRECT-$code" + body.drop(2)).take(32)
+        // SSID limit is 32 bytes, not 32 Kotlin chars: cut on a codepoint
+        // boundary so the driver never sees half a character.
+        val ssid = "DIRECT-$code" + body.drop(2)
+        val bytes = ssid.toByteArray(Charsets.UTF_8)
+        if (bytes.size <= 32) return ssid
+        var end = 32
+        while (end > 0 && (bytes[end].toInt() and 0xC0) == 0x80) end--
+        return String(bytes, 0, end, Charsets.UTF_8)
     }
 
     fun registerReceiver(onChanged: (WifiP2pGroup?) -> Unit) {

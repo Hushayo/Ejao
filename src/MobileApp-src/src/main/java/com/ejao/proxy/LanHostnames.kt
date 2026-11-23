@@ -120,7 +120,8 @@ object LanHostnames {
             write(0x00); write(0x00) // NSCOUNT
             write(0x00); write(0x00) // ARCOUNT
             write(0x20)             // NetBIOS name length (32)
-            write(ByteArray(32).also { it[0] = '*'.code.toByte() })
+            write('C'.code); write('K'.code) // '*' + 15 spaces, RFC 1002 encoding
+            repeat(30) { write('A'.code) }
             write(0x00); write(0x21) // NBSTAT
             write(0x00); write(0x01) // IN
         }.toByteArray()
@@ -157,12 +158,12 @@ object LanHostnames {
         if (an <= 0) return null
         var off = 12
         repeat(qd) {
-            off = readName(buf, off)?.second ?: return null
+            off = readName(buf, off, len)?.second ?: return null
             if (off + 4 > len) return null
             off += 4
         }
         if (off + 10 > len) return null
-        off = readName(buf, off)?.second ?: return null
+        off = readName(buf, off, len)?.second ?: return null
         if (off + 10 > len) return null
         val type = u16(buf, off)
         val rdLen = u16(buf, off + 8)
@@ -291,13 +292,13 @@ object LanHostnames {
         val total = u16(buf, 6) + u16(buf, 8) + u16(buf, 10)
         var off = 12
         repeat(qd) {
-            off = readName(buf, off)?.second ?: return null
+            off = readName(buf, off, len)?.second ?: return null
             if (off + 4 > len) return null
             off += 4
         }
         repeat(total) {
             if (off + 10 > len) return null
-            val (owner, afterName) = readName(buf, off) ?: return null
+            val (owner, afterName) = readName(buf, off, len) ?: return null
             var p = afterName
             if (p + 10 > len) return null
             val type = u16(buf, p)
@@ -305,7 +306,7 @@ object LanHostnames {
             p += 10
             if (p + rdLen > len) return null
             if (type == 12 && owner.equals(wantOwner, ignoreCase = true)) {
-                val target = readName(buf, p)?.first ?: return null
+                val target = readName(buf, p, len)?.first ?: return null
                 return cleanName(target)
             }
             off = p + rdLen
@@ -314,27 +315,27 @@ object LanHostnames {
     }
 
     /** Parses a (possibly compressed) DNS name starting at [off]. */
-    private fun readName(buf: ByteArray, off: Int): Pair<String, Int>? {
+    private fun readName(buf: ByteArray, off: Int, limit: Int = buf.size): Pair<String, Int>? {
         val sb = StringBuilder()
         var pos = off
         var end = -1
         var jumps = 0
         while (true) {
-            if (pos < 0 || pos >= buf.size) return null
+            if (pos < 0 || pos >= limit) return null
             val len = buf[pos].toInt() and 0xFF
             if (len == 0) {
                 pos++
                 break
             }
             if (len and 0xC0 == 0xC0) {
-                if (pos + 1 >= buf.size) return null
+                if (pos + 1 >= limit) return null
                 val ptr = ((len and 0x3F) shl 8) or (buf[pos + 1].toInt() and 0xFF)
                 if (end < 0) end = pos + 2
                 pos = ptr
                 if (++jumps > 8) return null
                 continue
             }
-            if (pos + 1 + len > buf.size) return null
+            if (pos + 1 + len > limit) return null
             sb.append(String(buf, pos + 1, len, Charsets.ISO_8859_1)).append('.')
             pos += 1 + len
         }

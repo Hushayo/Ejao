@@ -16,6 +16,7 @@ import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.NetworkInterface
 import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -39,6 +40,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class PanelServer(
     private val port: Int,
     private val context: Context,
+    private val bindIp: String = "0.0.0.0",
     private val enabled: Boolean = true,
     private val onLog: (String) -> Unit = {},
     private val onRestartRequest: () -> Unit = {},
@@ -58,6 +60,7 @@ class PanelServer(
     private val running = AtomicBoolean(true)
     private var serverSocket: ServerSocket? = null
     private var tcpJob: Job? = null
+    private val clients = java.util.concurrent.ConcurrentHashMap.newKeySet<Socket>()
 
     fun start() {
         if (!enabled) {
@@ -71,6 +74,8 @@ class PanelServer(
     fun stop() {
         running.set(false)
         runCatching { serverSocket?.close() }
+        clients.forEach { runCatching { it.close() } }
+        clients.clear()
         tcpJob?.cancel()
         scope.cancel()
         runCatching { workerExecutor.shutdownNow() }
@@ -87,7 +92,7 @@ class PanelServer(
             val ss = ServerSocket()
             ss.reuseAddress = true
             runCatching { ss.setReceiveBufferSize(64 * 1024) }
-            ss.bind(InetSocketAddress("0.0.0.0", port), 64)
+            ss.bind(InetSocketAddress(bindIp, port), 64)
             serverSocket = ss
             onLog("Control panel listening on port $port")
             while (running.get()) {
@@ -97,8 +102,16 @@ class PanelServer(
                     break
                 }
                 client.tcpNoDelay = true
+                client.soTimeout = 10_000
+                if (clients.size >= 32) {
+                    runCatching { client.close() }
+                    continue
+                }
+                clients.add(client)
                 tuneSocket(client)
-                scope.launch { handleClient(client) }
+                scope.launch {
+                    try { handleClient(client) } finally { clients.remove(client) }
+                }
             }
         } catch (e: Exception) {
             if (running.get()) onLog("Control panel server error: $e")
@@ -115,18 +128,29 @@ class PanelServer(
             val requestLine = readLine(input) ?: return
             if (requestLine.isEmpty()) return
             val parts = requestLine.split(" ")
-            if (parts.size < 3) return
+            if (parts.size != 3) return
             val method = parts[0].uppercase(Locale.US)
             val target = parts[1]
             val headers = mutableListOf<String>()
             while (true) {
                 val line = readLine(input) ?: break
                 if (line.isEmpty()) break
+                if (headers.size >= 100) throw IOException("too many headers")
                 headers.add(line)
+            }
+
+            if (!PanelSecurity.allows(headers, localAddresses())) {
+                writeForbidden(output)
+                return
             }
 
             if (method == "POST") {
                 if (target == "/restart") {
+                    // Browsers send Content-Length with every form POST.
+                    // Consume it before writing the reply, otherwise the
+                    // unread body is parsed as the next request.
+                    readBoundedContent(input, headers)
+                    if (requiresApproval(output, "restart")) return
                     // Respond BEFORE restarting: restartProxy() stops this very
                     // PanelServer (closing the client socket), so if we triggered it
                     // first the browser would hang on "loading" forever with no reply.
@@ -135,6 +159,8 @@ class PanelServer(
                     return
                 }
                 if (target == "/idle") {
+                    readBoundedContent(input, headers)
+                    if (requiresApproval(output, "idle")) return
                     // Data plane pause only: group, panels, service all stay
                     // up, so this reply + a later /resume always get through.
                     writePanelPage(output, idleHtml(true))
@@ -142,6 +168,8 @@ class PanelServer(
                     return
                 }
                 if (target == "/resume") {
+                    readBoundedContent(input, headers)
+                    if (requiresApproval(output, "resume")) return
                     writePanelPage(output, idleHtml(false))
                     onIdleRequest(false)
                     return
@@ -150,9 +178,11 @@ class PanelServer(
                     handleRename(output, headers, input)
                     return
                 }
-                val cl = headers.firstOrNull { it.startsWith("Content-Length:", true) }
-                    ?.substringAfter(':')?.trim()?.toIntOrNull()
-                val body = if (cl != null && cl in 1..1_000_000) readExact(input, cl) else ""
+                if (target != "/settings" && target != "/save" && target != "/") {
+                    writeNotFound(output)
+                    return
+                }
+                val body = readBoundedContent(input, headers)
                 applyPanelForm(body)
                 val cfg = ConfigManager.load(context)
                 writePanelPage(output, if (cfg.requireApprovalRestart) pendingPageHtml() else savedPageHtml())
@@ -273,9 +303,7 @@ class PanelServer(
 
     private fun handleRename(output: BufferedOutputStream, headers: List<String>, input: BufferedInputStream) {
         try {
-            val cl = headers.firstOrNull { it.startsWith("Content-Length:", true) }
-                ?.substringAfter(':')?.trim()?.toIntOrNull() ?: 0
-            val body = if (cl in 1..1_000_000) readExact(input, cl) else ""
+            val body = readBoundedContent(input, headers)
             val map = mutableMapOf<String, String>()
             body.split('&').forEach { pair ->
                 if (pair.isEmpty()) return@forEach
@@ -477,15 +505,24 @@ class PanelServer(
         </div></body></html>
         """.trimIndent()
 
-    private fun readExact(input: InputStream, n: Int): String {
-        val buf = ByteArray(n)
-        var r = 0
-        while (r < n) {
-            val m = input.read(buf, r, n - r)
-            if (m <= 0) break
-            r += m
-        }
-        return String(buf, 0, r, Charsets.UTF_8)
+    private fun localAddresses(): Set<String> = runCatching {
+        NetworkInterface.getNetworkInterfaces().asSequence().flatMap { it.inetAddresses.asSequence() }
+            .mapNotNull { it.hostAddress }.toSet() + AppState.apInfo.value.goIp
+    }.getOrDefault(setOf(AppState.apInfo.value.goIp))
+
+    private fun requiresApproval(output: BufferedOutputStream, action: String): Boolean {
+        if (!ConfigManager.load(context).requireApprovalRestart) return false
+        PanelApproval.submit(mapOf("action" to action))
+        writePanelPage(output, if (action == "restart") restartRequestedHtml() else pendingPageHtml())
+        return true
+    }
+
+    private fun writeForbidden(output: BufferedOutputStream) {
+        val bytes = "Forbidden".toByteArray()
+        output.write("HTTP/1.1 403 Forbidden\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n"
+            .toByteArray())
+        output.write(bytes)
+        output.flush()
     }
 
     /**

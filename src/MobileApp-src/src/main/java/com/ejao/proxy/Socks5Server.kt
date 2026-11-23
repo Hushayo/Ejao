@@ -98,6 +98,7 @@ class Socks5Server(
     private val dgramScope = CoroutineScope(SupervisorJob() + datagramDispatcher)
     private val running = AtomicBoolean(true)
     private var serverSocket: ServerSocket? = null
+    private val clients = ConcurrentHashMap.newKeySet<Socket>()
     private var udpSocket: DatagramSocket? = null
     private var tcpJob: Job? = null
     private var udpJob: Job? = null
@@ -187,12 +188,15 @@ class Socks5Server(
     }
 
     private val udpSessions = ConcurrentHashMap<String, UdpSession>()
+    private val udpAssociations = ConcurrentHashMap<String, MutableList<UdpAssociation>>()
     private val lastIpv6DropLogMs = AtomicLong(0L)
 
     // Bumped whenever the cellular egress appears or goes away. Sessions
     // remember the epoch they were bound in; a mismatch means the socket is
     // bound to a stale network and must be rebuilt rather than blackholing.
     @Volatile private var egressEpoch = 0
+
+    private class UdpAssociation(val expectedAddr: InetAddress?, val expectedPort: Int)
 
     private class UdpSession(val socket: DatagramSocket, val clientKey: String = "") {
         @Volatile var lastActivity = System.currentTimeMillis()
@@ -216,6 +220,7 @@ class Socks5Server(
         // atomically as one immutable snapshot so the receive thread can never
         // mix a new key with an old address; null = needs the coroutine path.
         @Volatile var dest: UdpDest? = null
+        val remotePeers = ConcurrentHashMap.newKeySet<InetSocketAddress>()
         // Consecutive sendto failures. Reset by any successful send; only a
         // socket that keeps failing is retired.
         val sendFails = AtomicInteger(0)
@@ -248,6 +253,9 @@ class Socks5Server(
         running.set(false)
         runCatching { serverSocket?.close() }
         runCatching { udpSocket?.close() }
+        clients.forEach { runCatching { it.close() } }
+        clients.clear()
+        udpAssociations.clear()
         udpSessions.values.forEach { runCatching { it.socket.close() } }
         udpSessions.clear()
         netCallback?.let {
@@ -279,7 +287,7 @@ class Socks5Server(
                 runCatching { ss.setReceiveBufferSize(clientRcvBuf) }
                 // Default backlog (50) drops SYNs when a browser opens dozens of
                 // connections at once, and every drop costs a 1s client retry.
-                ss.bind(InetSocketAddress("0.0.0.0", port), 1024)
+                ss.bind(InetSocketAddress(advertiseIp, port), 1024)
                 serverSocket = ss
                 fails = 0
                 while (running.get()) {
@@ -294,10 +302,13 @@ class Socks5Server(
                         break
                     }
                     client.tcpNoDelay = true
+                    clients.add(client)
                     runCatching { client.keepAlive = true }
                     runCatching { client.setReceiveBufferSize(clientRcvBuf) }
                     runCatching { client.setSendBufferSize(clientSndBuf) }
-                    hsScope.launch { handleTcpClient(client) }
+                    hsScope.launch {
+                        try { handleTcpClient(client) } finally { clients.remove(client) }
+                    }
                 }
             } catch (e: Exception) {
                 if (!running.get()) return
@@ -413,11 +424,13 @@ class Socks5Server(
         }
         if (len < portOff + 2) return false
         val dstPort = ((data[portOff].toInt() and 0xff) shl 8) or (data[portOff + 1].toInt() and 0xff)
+        val sourcePort = clientKey.substringAfterLast(':').toIntOrNull() ?: return true
+        if (!isUdpAuthorized(clientIp, sourcePort)) return true
         val payloadOff = portOff + 2
         val payloadLen = len - payloadOff
 
         val session = udpSessions[clientKey] ?: return false
-        if (session.boundEpoch != egressEpoch) return false
+        if (session.boundEpoch != egressEpoch || session.socket.isClosed) return false
         // Destination must be exactly what the coroutine path resolved last
         // time - compared as raw bytes so hostname targets stay fast too.
         val dest = session.dest ?: return false
@@ -535,15 +548,18 @@ class Socks5Server(
 
             val ver2 = input.readUnsignedByte()
             val cmd = input.readUnsignedByte()
-            input.readUnsignedByte() // RSV
+            val reserved = input.readUnsignedByte()
             if (ver2 != 0x05) {
                 client.close(); return
+            }
+            if (reserved != 0) {
+                replyError(output, 0x01); client.close(); return
             }
             val (target, targetPort) = readTarget(input)
 
             when (cmd) {
                 0x01 -> handleConnect(client, input, output, target, targetPort, clientIp)
-                0x03 -> handleUdpAssociate(client, input, output)
+                0x03 -> handleUdpAssociate(client, input, output, target, targetPort)
                 else -> {
                     replyError(output, 0x07); client.close()
                 }
@@ -576,7 +592,11 @@ class Socks5Server(
         targetPort: Int,
         clientIp: String
     ) {
-        tcpSem.withPermit {
+        if (!tcpSem.tryAcquire()) {
+            replyError(output, 0x01)
+            return
+        }
+        try {
         // The tunnel's lifetime runs on the data pool, not the control pool:
         // the handshake thread is released as soon as this suspends.
         withContext(dataDispatcher) {
@@ -627,28 +647,23 @@ class Socks5Server(
                 // away (EOF / RST, or the kernel's keepalive probes).
                 up.keepAlive = true
                 up.soTimeout = 0
+                runCatching { client.keepAlive = true }
                 upstream = up
                 EgressManager.reportSuccess(target)
                 runCatching { client.soTimeout = 0 }
                 replySuccess(output)
                 replied = true
                 onLog("TCP $target:$targetPort")
-                val tx = AtomicLong(0L)
-                val rx = AtomicLong(0L)
-                val jobIn = dataScope.launch {
-                    try { tx.set(pump(input, up.getOutputStream()) { n ->
-                        TrafficStats.addTx(n.toLong())
-                        ClientUsage.add(clientIp, n.toLong())
-                    }) } finally { runCatching { up.shutdownOutput() } }
-                }
-                val jobOut = dataScope.launch {
-                    try { rx.set(pump(up.getInputStream(), output) { n ->
-                        TrafficStats.addRx(n.toLong())
-                        ClientUsage.add(clientIp, n.toLong())
-                    }) } finally { runCatching { client.shutdownOutput() } }
-                }
-                jobIn.join(); jobOut.join()
-                reportTunnel(target, targetPort, System.currentTimeMillis() - t0, tx.get(), rx.get())
+                val (tx, rx) = TcpTunnel.relay(
+                    client, up, input, client.getOutputStream(), running::get,
+                    onUpload = { n ->
+                        TrafficStats.addTx(n.toLong()); ClientUsage.add(clientIp, n.toLong())
+                    },
+                    onDownload = { n ->
+                        TrafficStats.addRx(n.toLong()); ClientUsage.add(clientIp, n.toLong())
+                    }
+                )
+                reportTunnel(target, targetPort, System.currentTimeMillis() - t0, tx, rx)
             } catch (e: Exception) {
                 EgressManager.reportFailure(target)
                 onLog("TCP fail $target:$targetPort: ${e.message}")
@@ -660,10 +675,18 @@ class Socks5Server(
                 AppState.tcpTunnels.value = if (left < 0) 0 else left
             }
         }
+        } finally {
+            tcpSem.release()
         }
     }
 
-    private suspend fun handleUdpAssociate(client: Socket, input: DataInputStream, output: DataOutputStream) {
+    private suspend fun handleUdpAssociate(
+        client: Socket,
+        input: DataInputStream,
+        output: DataOutputStream,
+        target: String,
+        targetPort: Int
+    ) {
         // One thread is pinned for as long as the client holds this TCP open,
         // so it has to come out of the data budget - and be refused rather than
         // queued when the budget is gone, otherwise the client hangs on a
@@ -675,13 +698,19 @@ class Socks5Server(
             return
         }
         try {
-            withContext(dataDispatcher) { udpAssociateLoop(client, input, output) }
+            withContext(dataDispatcher) { udpAssociateLoop(client, input, output, target, targetPort) }
         } finally {
             udpAssocSem.release()
         }
     }
 
-    private suspend fun udpAssociateLoop(client: Socket, input: DataInputStream, output: DataOutputStream) {
+    private suspend fun udpAssociateLoop(
+        client: Socket,
+        input: DataInputStream,
+        output: DataOutputStream,
+        target: String,
+        targetPort: Int
+    ) {
         // Gaming fix: this TCP connection IS the UDP session lifetime for
         // ProxiFyre. The old 300s soTimeout (set in handleTcpClient) killed
         // it mid-game (~5min idle on TCP while UDP was active), tearing down
@@ -689,6 +718,20 @@ class Socks5Server(
         runCatching { client.soTimeout = 0 }
         runCatching { client.keepAlive = true }
         val relayAddr = InetAddress.getByName(advertiseIp)
+        val clientIp = client.inetAddress.hostAddress ?: return
+        val expectedAddr = when {
+            target == "0.0.0.0" || target == "::" -> null
+            else -> EgressManager.parseLiteral(target) ?: resolve(target, null).firstOrNull()
+        }
+        if (expectedAddr != null && expectedAddr.hostAddress != clientIp) {
+            replyError(output, 0x01)
+            return
+        }
+        val association = UdpAssociation(expectedAddr, targetPort)
+        val associations = udpAssociations.computeIfAbsent(clientIp) {
+            java.util.concurrent.CopyOnWriteArrayList()
+        }
+        synchronized(associations) { associations.add(association) }
         output.writeByte(0x05); output.writeByte(0x00); output.writeByte(0x00)
         output.writeByte(0x01) // IPv4
         output.write(relayAddr.address)
@@ -705,8 +748,30 @@ class Socks5Server(
                 if (n < 0) break
             }
         } catch (_: Exception) {
+        } finally {
+            synchronized(associations) {
+                associations.remove(association)
+                if (associations.isEmpty()) {
+                    udpAssociations.remove(clientIp, associations)
+                    // RFC 1928 ties UDP mappings to the controlling TCP
+                    // connection. Release its sockets when that TCP closes.
+                    val prefix = "$clientIp:"
+                    udpSessions.entries.removeIf { (_, session) ->
+                        if (!session.clientKey.startsWith(prefix)) return@removeIf false
+                        runCatching { session.socket.close() }
+                        true
+                    }
+                }
+            }
         }
         runCatching { client.close() }
+    }
+
+    private fun isUdpAuthorized(clientIp: String, clientPort: Int): Boolean {
+        return udpAssociations[clientIp]?.any {
+            (it.expectedPort == 0 || it.expectedPort == clientPort) &&
+                (it.expectedAddr == null || it.expectedAddr.hostAddress == clientIp)
+        } == true
     }
 
     private suspend fun handleUdpPacket(
@@ -716,6 +781,7 @@ class Socks5Server(
         data: ByteArray
     ) {
         try {
+            if (!isUdpAuthorized(clientAddr.hostAddress ?: return, clientPort)) return
             if (data.size < 10) return
             val rsv0 = data[0]; val rsv1 = data[1]; val frag = data[2].toInt() and 0xff
             if (rsv0 != 0.toByte() || rsv1 != 0.toByte()) return
@@ -744,9 +810,10 @@ class Socks5Server(
                 }
                 0x03 -> {
                     val len = data[idx].toInt() and 0xff
+                    if (len == 0) return
                     idx += 1
                     if (data.size < idx + len + 2) return
-                    dstHost = String(data, idx, len)
+                    dstHost = String(data, idx, len, Charsets.UTF_8)
                     dstHostKey = data.copyOfRange(idx, idx + len)
                     idx += len
                     // Domain that is actually an IP literal (ProxiFyre sends
@@ -822,8 +889,11 @@ class Socks5Server(
             }
             val session = sessionNow ?: return
             if (isNew) {
+                if (!udpSem.tryAcquire()) {
+                    if (udpSessions.remove(clientKey, session)) runCatching { session.socket.close() }
+                    return
+                }
                 dataScope.launch {
-                    udpSem.acquire()
                     try {
                         runUdpReplyLoop(session, sock, clientAddr, clientPort)
                     } finally {
@@ -840,12 +910,14 @@ class Socks5Server(
                 // 3-step fallback as TCP CONNECT: picked net, then fresh
                 // cellular, then system default.
                 val dstAddr = pickUdpTarget(session, dstHost, dstInet, net)
+                if (session.remotePeers.size < 64) session.remotePeers.add(InetSocketAddress(dstAddr, dstPort))
                 // Publish the destination for udpFastPath. The receive thread
                 // then relays this flow's datagrams inline (no copy, no
                 // dispatch, no network query) until the key stops matching.
                 session.dest = UdpDest(dstIpKey, dstHostKey, dstPort, dstAddr, dstHost)
                 session.lastSendAt = System.currentTimeMillis()
                 session.sentSinceReply++
+                session.lastActivity = session.lastSendAt
                 if (udpInflightSem.tryAcquire()) {
                     try {
                         session.socket.send(DatagramPacket(payload, payload.size, dstAddr, dstPort))
@@ -887,6 +959,13 @@ class Socks5Server(
             session.addrIdx = 0
             session.dstHost = null
             return dstInet
+        }
+        // One UDP ASSOCIATE may carry datagrams for multiple hostnames.
+        // Never reuse a previous hostname's resolution for a new destination.
+        if (!session.dstHost.equals(dstHost, ignoreCase = true)) {
+            session.addrs = emptyList()
+            session.addrIdx = 0
+            session.dest = null
         }
         session.addrs.getOrNull(session.addrIdx)?.let { return it }
         // getaddrinfo blocks for up to 5s; do it on the DNS pool so a lookup
@@ -1046,15 +1125,16 @@ class Socks5Server(
                 } catch (e: Exception) {
                     break
                 }
-                session.lastActivity = System.currentTimeMillis()
-                session.lastReplyAt = session.lastActivity
-                session.sentSinceReply = 0
                 val src = pkt.address
                 val srcPort = pkt.port
                 val dataLen = pkt.length
-                session.rx.addAndGet(dataLen.toLong())
                 val ipBytes = src.address
                 if (ipBytes.size != 4) continue
+                if (InetSocketAddress(src, srcPort) !in session.remotePeers) continue
+                session.lastActivity = System.currentTimeMillis()
+                session.lastReplyAt = session.lastActivity
+                session.sentSinceReply = 0
+                session.rx.addAndGet(dataLen.toLong())
                 System.arraycopy(ipBytes, 0, header, 4, 4)
                 header[8] = ((srcPort shr 8) and 0xff).toByte()
                 header[9] = (srcPort and 0xff).toByte()
@@ -1123,31 +1203,4 @@ class Socks5Server(
     private fun reportUdp(session: UdpSession) {
     }
 
-    private suspend fun pump(src: InputStream, dst: OutputStream, onChunk: ((Int) -> Unit)? = null): Long {
-        val buf = PUMP_BUF.get()
-        var total = 0L
-        try {
-            while (running.get()) {
-                val n = try {
-                    src.read(buf)
-                } catch (_: SocketTimeoutException) {
-                    // Idle is not dead: an SO_TIMEOUT (only ever set on the
-                    // handshake now) means come back and wait, not close.
-                    continue
-                }
-                if (n <= 0) break
-                dst.write(buf, 0, n)
-                total += n
-                onChunk?.invoke(n)
-                dst.flush()
-            }
-        } catch (e: Exception) {
-            if (e is kotlinx.coroutines.CancellationException) throw e
-        }
-        return total
-    }
-
-    companion object {
-        private val PUMP_BUF = ThreadLocal.withInitial { ByteArray(131072) }
-    }
 }

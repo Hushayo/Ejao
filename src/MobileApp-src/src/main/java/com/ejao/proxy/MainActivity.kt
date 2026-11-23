@@ -607,7 +607,7 @@ class MainActivity : AppCompatActivity() {
                         "Approve within 10 seconds, otherwise the request is dropped."
                 )
                 .setCancelable(false)
-                .setPositiveButton("Approve") { _, _ -> runCatching { PanelApproval.approve(this) } }
+                .setPositiveButton("Approve") { _, _ -> runCatching { PanelApproval.approve(this, req.id) } }
                 .setNegativeButton("Deny") { _, _ -> runCatching { PanelApproval.deny() } }
                 .create()
         } catch (e: Exception) {

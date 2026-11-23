@@ -12,7 +12,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import java.io.BufferedInputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
@@ -29,23 +28,24 @@ import java.util.concurrent.atomic.AtomicLong
 
 class Socks4Server(
     private val port: Int,
+    private val bindIp: String = "192.168.49.1",
     private val context: Context,
     private val onLog: (String) -> Unit = {}
 ) {
 
     private val workerExecutor = Executors.newCachedThreadPool()
-    private val tcpSem = Semaphore(512)
+    private val tcpSem = Semaphore(128)
     private val proxyDispatcher = workerExecutor.asCoroutineDispatcher()
     private val scope = CoroutineScope(SupervisorJob() + proxyDispatcher)
     private val running = AtomicBoolean(true)
     private var serverSocket: ServerSocket? = null
     private var tcpJob: Job? = null
+    private val clients = java.util.concurrent.ConcurrentHashMap.newKeySet<Socket>()
     @Volatile private var cellularNetwork: Network? = null
     private var netCallback: ConnectivityManager.NetworkCallback? = null
 
     private val socketRcvBuf = 4 * 1024 * 1024
     private val socketSndBuf = 1 * 1024 * 1024
-    private val tunnelIdleTimeoutMs = 100_000
     private val tunnelCount = AtomicInteger(0)
 
     private val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -96,6 +96,8 @@ class Socks4Server(
     fun stop() {
         running.set(false)
         runCatching { serverSocket?.close() }
+        clients.forEach { runCatching { it.close() } }
+        clients.clear()
         netCallback?.let {
             runCatching {
                 (context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager)
@@ -112,7 +114,7 @@ class Socks4Server(
             val ss = ServerSocket()
             ss.reuseAddress = true
             runCatching { ss.setReceiveBufferSize(socketRcvBuf) }
-            ss.bind(InetSocketAddress("0.0.0.0", port), 1024)
+            ss.bind(InetSocketAddress(bindIp, port), 1024)
             serverSocket = ss
             while (running.get()) {
                 val client = try {
@@ -123,7 +125,10 @@ class Socks4Server(
                 client.tcpNoDelay = true
                 runCatching { client.setReceiveBufferSize(socketRcvBuf) }
                 runCatching { client.setSendBufferSize(socketSndBuf) }
-                scope.launch { handleClient(client) }
+                clients.add(client)
+                scope.launch {
+                    try { handleClient(client) } finally { clients.remove(client) }
+                }
             }
         } catch (e: Exception) {
             if (running.get()) onLog("SOCKS4 TCP server error: $e")
@@ -135,7 +140,8 @@ class Socks4Server(
         val meteredIn = CountingInputStream(client.getInputStream())
         val meteredOut = CountingOutputStream(client.getOutputStream())
         try {
-            client.soTimeout = 300000
+            client.soTimeout = 15_000
+            runCatching { client.keepAlive = true }
             val input = DataInputStream(BufferedInputStream(meteredIn, 8192))
             val output = DataOutputStream(meteredOut)
 
@@ -200,7 +206,11 @@ class Socks4Server(
         isSocks4a: Boolean,
         clientIp: String
     ) {
-        tcpSem.withPermit {
+        if (!tcpSem.tryAcquire()) {
+            reply(output, 0x5B)
+            return
+        }
+        try {
             var upstream: Socket? = null
             tunnelCount.incrementAndGet()
             AppState.tcpTunnels.value = tunnelCount.get()
@@ -234,27 +244,23 @@ class Socks4Server(
                     }
                 }
                 if (up == null) throw IOException("could not connect to $target:$targetPort via $net : $lastErr")
-                up.soTimeout = tunnelIdleTimeoutMs
+                up.soTimeout = 0
+                up.keepAlive = true
+                runCatching { client.soTimeout = 0 }
                 upstream = up
                 EgressManager.reportSuccess(target)
                 reply(output, 0x5A) // granted
                 onLog("SOCKS4 TCP ${if (isSocks4a) "[4a]" else ""} $target:$targetPort")
-                val tx = AtomicLong(0L)
-                val rx = AtomicLong(0L)
-                val jobIn = scope.launch {
-                    try { tx.set(pump(input, up.getOutputStream()) { n ->
-                        TrafficStats.addTx(n.toLong())
-                        ClientUsage.add(clientIp, n.toLong())
-                    }) } finally { runCatching { up.shutdownOutput() } }
-                }
-                val jobOut = scope.launch {
-                    try { rx.set(pump(up.getInputStream(), output) { n ->
-                        TrafficStats.addRx(n.toLong())
-                        ClientUsage.add(clientIp, n.toLong())
-                    }) } finally { runCatching { client.shutdownOutput() } }
-                }
-                jobIn.join(); jobOut.join()
-                reportTunnel(target, targetPort, System.currentTimeMillis() - t0, tx.get(), rx.get())
+                val (tx, rx) = TcpTunnel.relay(
+                    client, up, input, client.getOutputStream(), running::get,
+                    onUpload = { n ->
+                        TrafficStats.addTx(n.toLong()); ClientUsage.add(clientIp, n.toLong())
+                    },
+                    onDownload = { n ->
+                        TrafficStats.addRx(n.toLong()); ClientUsage.add(clientIp, n.toLong())
+                    }
+                )
+                reportTunnel(target, targetPort, System.currentTimeMillis() - t0, tx, rx)
             } catch (e: Exception) {
                 EgressManager.reportFailure(target)
                 onLog("SOCKS4 TCP fail $target:$targetPort: ${e.message}")
@@ -265,6 +271,8 @@ class Socks4Server(
                 val left = tunnelCount.decrementAndGet()
                 AppState.tcpTunnels.value = if (left < 0) 0 else left
             }
+        } finally {
+            tcpSem.release()
         }
     }
 
@@ -281,25 +289,4 @@ class Socks4Server(
     private fun reportTunnel(target: String, targetPort: Int, dms: Long, tx: Long, rx: Long) {
     }
 
-    private suspend fun pump(src: InputStream, dst: OutputStream, onChunk: ((Int) -> Unit)? = null): Long {
-        val buf = PUMP_BUF.get()
-        var total = 0L
-        try {
-            while (running.get()) {
-                val n = src.read(buf)
-                if (n <= 0) break
-                dst.write(buf, 0, n)
-                total += n
-                onChunk?.invoke(n)
-                dst.flush()
-            }
-        } catch (e: Exception) {
-            if (e is kotlinx.coroutines.CancellationException) throw e
-        }
-        return total
-    }
-
-    companion object {
-        private val PUMP_BUF = ThreadLocal.withInitial { ByteArray(131072) }
-    }
 }

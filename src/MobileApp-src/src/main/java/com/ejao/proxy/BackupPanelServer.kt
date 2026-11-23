@@ -59,6 +59,7 @@ class BackupPanelServer(
     private val running = AtomicBoolean(false)
     private var serverSocket: ServerSocket? = null
     private var tcpJob: Job? = null
+    private val clients = java.util.concurrent.ConcurrentHashMap.newKeySet<Socket>()
     @Volatile var actualPort: Int = requestedPort
         private set
 
@@ -107,6 +108,8 @@ class BackupPanelServer(
     fun stop() {
         running.set(false)
         runCatching { serverSocket?.close() }
+        clients.forEach { runCatching { it.close() } }
+        clients.clear()
         serverSocket = null
         tcpJob?.cancel()
         tcpJob = null
@@ -125,10 +128,18 @@ class BackupPanelServer(
             }
             try {
                 client.tcpNoDelay = true
+                client.soTimeout = 10_000
                 runCatching { client.setReceiveBufferSize(32 * 1024) }
                 runCatching { client.setSendBufferSize(32 * 1024) }
             } catch (_: Exception) { }
-            sc.launch { handleClient(client) }
+            if (clients.size >= 32) {
+                runCatching { client.close() }
+                continue
+            }
+            clients.add(client)
+            sc.launch {
+                try { handleClient(client) } finally { clients.remove(client) }
+            }
         }
     }
 
@@ -136,32 +147,43 @@ class BackupPanelServer(
         val input = BufferedInputStream(client.getInputStream())
         val output = BufferedOutputStream(client.getOutputStream(), 32 * 1024)
         try {
+            client.soTimeout = 10_000
             val requestLine = readLine(input) ?: return
             if (requestLine.isEmpty()) return
             val parts = requestLine.split(" ")
-            if (parts.size < 3) return
+            if (parts.size != 3) return
             val method = parts[0].uppercase(Locale.US)
             val target = parts[1].substringBefore("?")
             val headers = mutableListOf<String>()
             while (true) {
                 val line = readLine(input) ?: break
                 if (line.isEmpty()) break
+                if (headers.size >= 100) throw java.io.IOException("too many headers")
                 headers.add(line)
+            }
+            // Accept every local address this device currently owns, not just
+            // the hotspot IP: the emergency page is reached exactly when that
+            // IP is unknown or the group is down.
+            val local = runCatching {
+                java.net.NetworkInterface.getNetworkInterfaces().asSequence()
+                    .flatMap { it.inetAddresses.asSequence() }
+                    .mapNotNull { it.hostAddress }.toSet() + AppState.apInfo.value.goIp
+            }.getOrDefault(setOf(AppState.apInfo.value.goIp))
+            if (!PanelSecurity.allows(headers, local)) {
+                val bytes = "Forbidden".toByteArray()
+                output.write("HTTP/1.1 403 Forbidden\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n".toByteArray())
+                output.write(bytes)
+                return
             }
             // Drain POST body (we don't need its contents - restart is unconditional).
             if (method == "POST") {
-                val cl = headers.firstOrNull { it.startsWith("Content-Length:", true) }
-                    ?.substringAfter(':')?.trim()?.toIntOrNull() ?: 0
-                if (cl in 1..1_000_000) {
-                    var left = cl
-                    val trash = ByteArray(4096)
-                    while (left > 0) {
-                        val m = input.read(trash, 0, minOf(trash.size, left))
-                        if (m <= 0) break
-                        left -= m
-                    }
-                }
+                readBoundedContent(input, headers)
                 if (target == "/restart") {
+                    if (ConfigManager.load(context).requireApprovalRestart) {
+                        PanelApproval.submit(mapOf("action" to "restart"))
+                        writeHtml(output, restartRequestedHtml())
+                        return
+                    }
                     // Reply BEFORE restarting: the restart tears down sockets,
                     // so triggering first would hang the browser with no reply.
                     writeHtml(output, restartRequestedHtml())

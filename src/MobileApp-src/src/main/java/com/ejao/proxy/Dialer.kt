@@ -2,9 +2,11 @@ package com.ejao.proxy
 
 import android.net.Network
 import java.io.IOException
+import java.io.InterruptedIOException
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.net.SocketTimeoutException
 import java.util.concurrent.Executors
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
@@ -28,6 +30,7 @@ import java.util.concurrent.atomic.AtomicReference
 object Dialer {
     private const val HEDGE_MS = 300L
     private const val ATTEMPT_TIMEOUT_MS = 4_500
+    private const val TOTAL_TIMEOUT_MS = 12_000L
 
     private val pool = Executors.newCachedThreadPool { r ->
         Thread(r, "ejao-dial").apply { isDaemon = true }
@@ -83,7 +86,7 @@ object Dialer {
     ): Socket {
         val total = addrs.size
         val launched = AtomicInteger(0)
-        val finished = AtomicInteger(0)
+        val failed = AtomicInteger(0)
         val winner = AtomicReference<Socket?>(null)
         val lastErr = AtomicReference<Exception?>(null)
         val signal = Semaphore(0)
@@ -98,28 +101,46 @@ object Dialer {
                     if (!winner.compareAndSet(null, s)) runCatching { s.close() }
                 } catch (e: Exception) {
                     lastErr.set(e)
+                    failed.incrementAndGet()
                 } finally {
-                    finished.incrementAndGet()
                     signal.release()
                 }
             }
         }
 
         launchNext()
-        var lastLaunch = System.currentTimeMillis()
+        val startedAt = System.currentTimeMillis()
+        var nextLaunchAt = startedAt + HEDGE_MS
         while (true) {
-            winner.get()?.let { return it }
-            if (finished.get() >= total) break
+            winner.get()?.let {
+                // Do not return a socket created after this attempt was
+                // interrupted: otherwise its only owner has disappeared.
+                if (Thread.currentThread().isInterrupted && winner.compareAndSet(it, null)) {
+                    runCatching { it.close() }
+                    throw InterruptedIOException("dial interrupted")
+                }
+                return it
+            }
+            if (launched.get() >= total && failed.get() >= total) break
             val now = System.currentTimeMillis()
-            if (launched.get() < total && (finished.get() > 0 || now - lastLaunch >= HEDGE_MS)) {
+            if (now - startedAt >= TOTAL_TIMEOUT_MS) {
+                throw SocketTimeoutException("all $total address(es) timed out")
+            }
+            if (launched.get() < total && (failed.get() >= launched.get() || now >= nextLaunchAt)) {
                 launchNext()
-                lastLaunch = now
+                nextLaunchAt = now + HEDGE_MS
                 continue
             }
             signal.tryAcquire(
-                if (launched.get() < total) HEDGE_MS else 200L,
+                if (launched.get() < total) 50L else 200L,
                 TimeUnit.MILLISECONDS
             )
+        }
+        // Race with a just-completed winner before reporting total failure.
+        winner.getAndSet(null)?.let {
+            if (!Thread.currentThread().isInterrupted) return it
+            runCatching { it.close() }
+            throw InterruptedIOException("dial interrupted")
         }
         throw IOException("all $total address(es) failed: ${lastErr.get()?.message}")
     }

@@ -19,6 +19,7 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.FutureTask
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.io.IOException
@@ -64,10 +65,19 @@ object EgressManager {
     private class DnsEntry(
         @Volatile var addrs: List<InetAddress>,
         @Volatile var expiresAt: Long,
-        @Volatile var refreshing: Boolean = false
+        @Volatile var refreshing: Boolean = false,
+        val generation: Int = 0
+    )
+
+    private data class DnsLookup(
+        val addrs: List<InetAddress>,
+        val generation: Int,
+        val hostGeneration: Int
     )
 
     private val dnsCache = ConcurrentHashMap<String, DnsEntry>()
+    private val dnsInFlight = ConcurrentHashMap<String, FutureTask<DnsLookup>>()
+    private val dnsHostGenerations = ConcurrentHashMap<String, AtomicInteger>()
     // Bumped by clearDns(): an in-flight background refresh must not write
     // addresses resolved via the previous network back into the fresh cache.
     private val dnsGeneration = AtomicInteger(0)
@@ -118,12 +128,19 @@ object EgressManager {
                 return active
             }
         }
-        val fast = fastNet
-        if (fast != null && now - fastNetAt < FAST_NET_MS) return fast
-
         // Binder calls stay outside the lock: holding a global monitor across
         // ConnectivityManager round-trips serialized every concurrent
         // connection setup in the whole process.
+        // Android normally chooses Wi-Fi as active. This proxy's explicit
+        // egress choice is cellular, so do not return Wi-Fi before looking
+        // for the requested cellular network.
+        val cellular = NetworkUtils.pickCellular(cm, fastNet)
+        if (cellular != null) {
+            rememberNet(cellular)
+            return cellular
+        }
+        val fast = fastNet
+        if (fast != null && now - fastNetAt < FAST_NET_MS && NetworkUtils.isValidEgress(cm, fast)) return fast
         val active = runCatching { cm.activeNetwork }.getOrNull()
         if (NetworkUtils.isValidEgress(cm, active)) {
             rememberNet(active)
@@ -153,20 +170,44 @@ object EgressManager {
     fun resolve(host: String, net: Network?): List<InetAddress> {
         // Numeric hosts never need DNS or the cache: parse and go.
         parseLiteral(host)?.let { return listOf(it) }
+        val hostKey = normalizeHost(host)
         val now = System.currentTimeMillis()
-        val cached = dnsCache[host]
+        val cacheKey = "$hostKey|${net?.toString() ?: "default"}"
+        val cached = dnsCache[cacheKey]
         if (cached != null) {
             if (now < cached.expiresAt) return cached.addrs
             // Expired: hand the client the last known addresses now and
             // refresh in the background. Only the very first lookup for a
             // host ever blocks on DNS.
-            refreshAsync(host, net, cached)
+            refreshAsync(hostKey, net, cacheKey, cached)
             return cached.addrs
         }
-        val ordered = orderV4First(resolveBlocking(host, net))
-        dnsCache[host] = DnsEntry(ordered, System.currentTimeMillis() + DNS_TTL_MS)
-        return ordered
+        val task = FutureTask<DnsLookup> {
+            val globalGeneration = dnsGeneration.get()
+            val hostGeneration = dnsHostGenerations[hostKey]?.get() ?: 0
+            val addrs = orderV4First(resolveBlocking(hostKey, net))
+            DnsLookup(addrs, globalGeneration, hostGeneration)
+        }
+        val current = dnsInFlight.putIfAbsent(cacheKey, task) ?: task
+        if (current === task) task.run()
+        try {
+            val lookup = current.get(DNS_TIMEOUT_MS + 500, TimeUnit.MILLISECONDS)
+            if (lookup.generation == dnsGeneration.get() &&
+                lookup.hostGeneration == (dnsHostGenerations[hostKey]?.get() ?: 0)
+            ) {
+                dnsCache[cacheKey] = DnsEntry(lookup.addrs, System.currentTimeMillis() + DNS_TTL_MS,
+                    generation = lookup.hostGeneration)
+            }
+            return lookup.addrs
+        } catch (e: Exception) {
+            current.cancel(true)
+            throw IOException("DNS failed for $hostKey via $net", e)
+        } finally {
+            dnsInFlight.remove(cacheKey, current)
+        }
     }
+
+    private fun normalizeHost(host: String): String = host.trim().trimEnd('.').lowercase()
 
     /**
      * Strict literal parser: IPv4 dotted-quad or IPv6 text. Returns null for
@@ -235,7 +276,7 @@ object EgressManager {
         return addrs
     }
 
-    private fun refreshAsync(host: String, net: Network?, entry: DnsEntry) {
+    private fun refreshAsync(host: String, net: Network?, cacheKey: String, entry: DnsEntry) {
         synchronized(entry) {
             if (entry.refreshing) return
             entry.refreshing = true
@@ -245,8 +286,11 @@ object EgressManager {
             dnsExecutorRef().execute {
                 try {
                     val addrs = orderV4First(getAllByName(host, net))
-                    if (addrs.isNotEmpty() && gen == dnsGeneration.get()) {
-                        dnsCache[host] = DnsEntry(addrs, System.currentTimeMillis() + DNS_TTL_MS)
+                    if (addrs.isNotEmpty() && gen == dnsGeneration.get() &&
+                        entry.generation == (dnsHostGenerations[host]?.get() ?: 0)
+                    ) {
+                        dnsCache[cacheKey] = DnsEntry(addrs, System.currentTimeMillis() + DNS_TTL_MS,
+                            generation = entry.generation)
                     }
                 } catch (_: Exception) {
                     if (gen == dnsGeneration.get()) {
@@ -281,10 +325,13 @@ object EgressManager {
     fun clearDns() {
         dnsGeneration.incrementAndGet()
         dnsCache.clear()
+        dnsHostGenerations.clear()
     }
 
     fun clearDnsHost(host: String) {
-        runCatching { dnsCache.remove(host) }
+        val key = normalizeHost(host)
+        dnsHostGenerations.computeIfAbsent(key) { AtomicInteger() }.incrementAndGet()
+        dnsCache.keys.removeIf { it.substringBefore('|') == key }
     }
 
     fun invalidateCache() {
@@ -297,7 +344,8 @@ object EgressManager {
 
     fun reportSuccess(host: String? = null) {
         lastSuccessMs.set(System.currentTimeMillis())
-        cellularFailStreak.set(0)
+        // Only probeOnce() may reset the cellular failure streak. Ordinary
+        // traffic over default Wi-Fi must not hide three failed cell probes.
         if (host != null) {
             hostStats[host]?.let {
                 it.consecutiveFails = 0
@@ -415,6 +463,7 @@ object EgressManager {
             // resolve() recreates it lazily on next use.
             runCatching { dnsExecutor.shutdownNow() }
         }
+        dnsInFlight.clear()
         hostStats.clear()
         dnsGeneration.incrementAndGet()
         dnsCache.clear()

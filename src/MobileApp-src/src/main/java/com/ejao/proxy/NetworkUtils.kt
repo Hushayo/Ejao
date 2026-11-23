@@ -10,10 +10,10 @@ object NetworkUtils {
         if (isValidCellular(cm, preferred)) return preferred
         val nets = runCatching { cm.allNetworks }.getOrNull().orEmpty()
         val active = runCatching { cm.activeNetwork }.getOrNull()
-        if (isValidatedEgress(cm, active)) return active
         for (n in nets) {
             if (isValidCellular(cm, n) && isValidatedEgress(cm, n)) return n
         }
+        if (isValidatedEgress(cm, active)) return active
         for (n in nets) {
             if (isValidatedEgress(cm, n)) return n
         }

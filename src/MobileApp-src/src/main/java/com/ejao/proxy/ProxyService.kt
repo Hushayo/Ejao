@@ -129,7 +129,10 @@ class ProxyService : Service() {
         runCatching { BackupPanelService.start(this) }
         runCatching { acquireLocks() }
         runCatching { startFileWatcher() }
-        runCatching { PanelApproval.onRestart = { restartProxy("panel_approval") } }
+        runCatching {
+            PanelApproval.onRestart = { restartProxy("panel_approval") }
+            PanelApproval.onIdle = { idle -> setIdle(idle) }
+        }
         runCatching {
             UpdateChecker.scheduleCheck(this, ConfigManager.ensureConfig(this).updateCheckIntervalHours)
         }
@@ -430,6 +433,7 @@ class ProxyService : Service() {
                         val ps = PanelServer(
                             port = config.panelPort,
                             context = this,
+                            bindIp = goIp,
                             enabled = true,
                             onLog = { updateStatus("  $it") },
                             onRestartRequest = { handlePanelRestart() },
@@ -820,6 +824,7 @@ class ProxyService : Service() {
             updateStatus("Starting SOCKS4 proxy on $goIp:${config.socks4Port}...")
             val server = Socks4Server(
                 port = config.socks4Port,
+                bindIp = goIp,
                 context = this,
                 onLog = { updateStatus("  $it") }
             )
@@ -1228,11 +1233,12 @@ class ProxyService : Service() {
             Log.i(TAG, "restart already in progress - ignoring duplicate request")
             return
         }
-        scope.launch {
+        restartJob = scope.launch {
             val myGen = pipelineGen.incrementAndGet()
             try {
                 Log.i(TAG, "proxy_restart reason=$reason")
                 updateStatus("Restarting proxy...")
+                if (!started.get()) return@launch
                 runCatching { ProxyState.setShouldRun(this@ProxyService, true) }
                 runCatching { scheduleWatchdog(this@ProxyService) }
                 // Re-assert locks: after hours the OS may have dropped them.
@@ -1338,7 +1344,7 @@ class ProxyService : Service() {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 Log.e(TAG, "restart failed", e)
                 runCatching { updateStatus("ERROR: restart failed (${e.message}) - tap Restart in the app again") }
-                runCatching { scheduleWatchdog(this@ProxyService) }
+                if (started.get()) runCatching { scheduleWatchdog(this@ProxyService) }
             } finally {
                 restartGuard.set(false)
             }
@@ -1357,6 +1363,9 @@ class ProxyService : Service() {
         runCatching { cancelWatchdog(this) }
         Log.i(TAG, "proxy_stopped explicit=$explicitStop")
         restartJob?.cancel()
+        PanelApproval.onRestart = null
+        PanelApproval.onIdle = null
+        PanelApproval.deny()
         pipelineJob?.cancel()
         keepAliveJob?.cancel()
         runCatching { fileObserver?.stopWatching() }
