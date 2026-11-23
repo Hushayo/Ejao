@@ -4,12 +4,12 @@
   <img src="src/MobileApp-src/src/main/res/drawable-nodpi/ic_launcher_legacy.png" width="108" height="108" alt="Ejao launcher icon">
 </p>
 
-![Latest release](https://img.shields.io/github/v/release/Hushayo/Ejao)
-![CI build](https://img.shields.io/github/actions/workflow/status/Hushayo/Ejao/build.yml?label=CI%20build)
-![License](https://img.shields.io/github/license/Hushayo/Ejao)
+![Latest release](https://img.shields.io/github/v/release/jamicaw56/Ejao)
+![CI build](https://img.shields.io/github/actions/workflow/status/jamicaw56/Ejao/build.yml?label=CI%20build)
+![License](https://img.shields.io/github/license/jamicaw56/Ejao)
 
 > [!NOTE]
-> **Mostly done - can be used normally.** For experimental/random builds check [ExtrasBuilds](https://github.com/Hushayo/Ejao/tree/ExtrasBuilds).
+> **Mostly done - can be used normally.** For experimental/random builds check [ExtrasBuilds](https://github.com/jamicaw56/Ejao/tree/ExtrasBuilds).
 
 > [!WARNING]
 > This application is tested only on Windows machine. I do not provide tutorial on how to do it on a phone.
@@ -30,7 +30,7 @@ connection
    the background, one tap to install
 
 Full setup guide, config reference and keep-alive details live in the
-**[wiki](https://github.com/Hushayo/Ejao/wiki)**.
+**[wiki](https://github.com/jamicaw56/Ejao/wiki)**.
 
 ## Using it
 
@@ -39,8 +39,8 @@ Full setup guide, config reference and keep-alive details live in the
    with default SSID `DIRECT-EjaoAP` and runs the proxy on it.
 3. Connect your PC to that WIFI with your set password.
 4. Here you have two options,
--> Have HTTP only (browses web only, no external programs unless those support WinHTTP) just do Settings → Network → Proxy → manual `192.168.49.1:8282` here's image if you don't prefer text [wiki](https://github.com/Hushayo/Ejao/wiki/Windows-Connect).
--> or have the SOCKS5 TCP+UDP via ProxiFyre/Proxifier at `192.168.49.1:1080` (tick UDP) — setup here [wiki](https://github.com/Hushayo/Ejao/wiki/PC-Client).
+-> Have HTTP only (browses web only, no external programs unless those support WinHTTP) just do Settings → Network → Proxy → manual `192.168.49.1:8282` here's image if you don't prefer text [wiki](https://github.com/jamicaw56/Ejao/wiki/Windows-Connect).
+-> or have the SOCKS5 TCP+UDP via ProxiFyre/Proxifier at `192.168.49.1:1080` (tick UDP) — setup here [wiki](https://github.com/jamicaw56/Ejao/wiki/PC-Client).
 
 ## Constraints 
 
@@ -57,7 +57,7 @@ Aggressive ROMs kill background apps. In the app's Keep-Alive tab:
 
 The proxy also runs as a `START_STICKY` foreground service (wake + WiFi locks),
 re-arms itself on boot/update, and pings `keepalive_url` on an interval so the
-OS sees live traffic. See the [wiki](https://github.com/Hushayo/Ejao/wiki/Keep-Alive).
+OS sees live traffic. See the [wiki](https://github.com/jamicaw56/Ejao/wiki/Keep-Alive).
 
 ## Limitations
 
@@ -68,4 +68,4 @@ OS sees live traffic. See the [wiki](https://github.com/Hushayo/Ejao/wiki/Keep-A
  ------------------------------------------
 - **SOCKS4 needs 4a:** enable remote hostname resolving (SOCKS4a) in the
   client or hostnames won't resolve. Details on the
-  [wiki](https://github.com/Hushayo/Ejao/wiki/PC-Client#option-3--socks4--socks4a-legacy-clients-tcp-only).
+  [wiki](https://github.com/jamicaw56/Ejao/wiki/PC-Client#option-3--socks4--socks4a-legacy-clients-tcp-only).

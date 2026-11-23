@@ -23,7 +23,9 @@ import java.util.concurrent.TimeUnit
  * install. This mirrors what a manual check does, minus the auto-launch.
  */
 object UpdateChecker {
-    private const val REPO_LATEST = "https://api.github.com/repos/Hushayo/Ejao/releases/latest"
+    // Single source of truth: owner/repo. Change here if the repo moves again.
+    private const val REPO_SLUG = "jamicaw56/Ejao"
+    private const val REPO_LATEST = "https://api.github.com/repos/$REPO_SLUG/releases/latest"
     private const val WORK_NAME = "ejao_update_check"
 
     /**
@@ -96,7 +98,7 @@ object UpdateChecker {
             val dir = File(base, "updates")
             if (!dir.exists()) dir.mkdirs()
             val file = File(dir, "ejao.apk")
-            val conn = URL("https://github.com/Hushayo/Ejao/releases/download/$tag/ejao.apk")
+            val conn = URL("https://github.com/$REPO_SLUG/releases/download/$tag/ejao.apk")
                 .openConnection() as HttpURLConnection
             conn.requestMethod = "GET"
             conn.setRequestProperty("User-Agent", "Ejao-App")
@@ -146,7 +148,7 @@ object UpdateChecker {
 
     private fun fetchExpectedHash(tag: String): String? {
         return try {
-            val conn = URL("https://github.com/Hushayo/Ejao/releases/download/$tag/ejao.apk.sha256")
+            val conn = URL("https://github.com/$REPO_SLUG/releases/download/$tag/ejao.apk.sha256")
                 .openConnection() as HttpURLConnection
             conn.requestMethod = "GET"
             conn.setRequestProperty("User-Agent", "Ejao-App")
