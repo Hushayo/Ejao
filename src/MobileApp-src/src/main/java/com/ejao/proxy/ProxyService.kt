@@ -289,10 +289,53 @@ class ProxyService : Service() {
                 // no longer see, so the conditional remove inside the loop
                 // skips and every create comes back ERROR until a manual
                 // STOP/START clears it. Unconditional remove + settle first.
-                Log.i(TAG, "pipeline start: clearing any stale P2P group before first create")
-                runCatching { p2p.removeGroup { } }
-                delay(4000)
-                if (!started.get() || pipelineGen.get() != myGen) return
+                //
+                // BUT not on a live-process restart with the iface still
+                // addressed: restartProxy deliberately KEPT that group, and a
+                // transient requestGroupInfo null used to fall through to
+                // removeGroup() on a working AP with clients on it - that is
+                // the "connectivity stops, everything must rejoin" report.
+                val liveRestart = lastSocksPort > 0 || lastHttpPort > 0 ||
+                    lastSocks4Port > 0 || lastPanelPort > 0
+                if (!liveRestart || !p2p.hasP2pAddress()) {
+                    Log.i(TAG, "pipeline start: clearing any stale P2P group before first create " +
+                        "(liveRestart=$liveRestart ifaceUp=${p2p.hasP2pAddress()})")
+                    runCatching { p2p.removeGroup { } }
+                    delay(4000)
+                    if (!started.get() || pipelineGen.get() != myGen) return
+                } else {
+                    // Iface up but group info came back null: hold the live
+                    // group. createGroup on top of a live AP only BUSY/ERROR
+                    // storms and wedges the stack for minutes.
+                    var probedSsid = ""
+                    var probedPass = ""
+                    var probeWaited = 0
+                    while (probeWaited < 6000 && probedSsid.isEmpty()) {
+                        if (!started.get() || pipelineGen.get() != myGen) return
+                        val got = AtomicBoolean(false)
+                        runCatching {
+                            p2p.requestGroupInfo { g ->
+                                got.set(true)
+                                if (g != null) {
+                                    probedSsid = g.networkName ?: ""
+                                    probedPass = g.passphrase ?: ""
+                                }
+                            }
+                        }
+                        var lw = 0
+                        while (!got.get() && lw < 1500) { delay(100); lw += 100 }
+                        if (probedSsid.isEmpty()) { delay(500); probeWaited += 500 }
+                    }
+                    val wantSsid = runCatching { p2p.normalizeSsid(config.ssid) }.getOrDefault(config.ssid)
+                    // Same creds (or still unknowable) -> reuse untouched.
+                    // Different creds -> fall through and re-form on purpose.
+                    if (probedSsid.isEmpty() || (probedSsid == wantSsid && probedPass == config.password)) {
+                        Log.i(TAG, "pipeline start: holding live P2P group (probed='$probedSsid')")
+                        groupSsid = if (probedSsid.isEmpty()) wantSsid else probedSsid
+                        groupPass = if (probedSsid.isEmpty()) config.password else probedPass
+                        groupReady = true
+                    }
+                }
             }
             while (!groupReady && attempt < maxGroupAttempts) {
                 if (!started.get() || pipelineGen.get() != myGen) return

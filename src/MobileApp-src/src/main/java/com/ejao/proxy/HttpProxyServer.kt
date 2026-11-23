@@ -60,6 +60,11 @@ class HttpProxyServer(
     private val connPool = ConcurrentHashMap<String, MutableList<Pair<Socket, Long>>>()
     private val lastSuccessMs = AtomicLong(0L)
     private val lastFailureMs = AtomicLong(0L)
+    // Last byte moved on any CONNECT tunnel. Tunnels report once at CONNECT
+    // and then stay silent in the log, so a long download or SSH session
+    // must not let one background failure age into an auto-restart that
+    // kills every live tunnel.
+    private val lastTunnelIoMs = AtomicLong(0L)
     private val autoRestartGuard = AtomicBoolean(false)
     private var staleWatchdogJob: Job? = null
     private val STALE_TIMEOUT_MS = 2 * 60_000L
@@ -487,6 +492,12 @@ class HttpProxyServer(
             val fail = lastFailureMs.get()
             if (success == 0L && fail == 0L) continue
             val now = System.currentTimeMillis()
+            // A tunnel that is still moving bytes means egress is alive: the
+            // "no successful request" counter only reflects plain HTTP.
+            // A wedged tunnel goes quiet, so this cannot pin healing off.
+            if (tunnelCount.get() > 0 &&
+                now - lastTunnelIoMs.get() < STALE_TIMEOUT_MS
+            ) continue
             val noSuccessFor = if (success == 0L) Long.MAX_VALUE else now - success
             val recentFail = fail != 0L && (now - fail) < STALE_TIMEOUT_MS
             if (noSuccessFor > STALE_TIMEOUT_MS && recentFail) {
@@ -676,6 +687,9 @@ class HttpProxyServer(
             output.write("HTTP/1.1 200 Connection established\r\n\r\n".toByteArray())
             output.flush()
             established = true
+            // Count the handshake as tunnel activity so a fresh, still-idle
+            // tunnel is not treated as dead egress by the watchdog.
+            lastTunnelIoMs.set(System.currentTimeMillis())
             onLog("CONNECT $host:$port")
             reportRequest(host, port, "CONNECT", "200", System.currentTimeMillis() - t0)
             val openAt = System.currentTimeMillis()
@@ -683,10 +697,12 @@ class HttpProxyServer(
             val (upBytes, dnBytes) = TcpTunnel.relay(
                 client, up, input, client.getOutputStream(), running::get,
                 onUpload = { n ->
+                    lastTunnelIoMs.set(System.currentTimeMillis())
                     TrafficStats.addTx(n.toLong()); ClientUsage.add(clientIp, n.toLong())
                 },
                 onDownload = { n ->
                     firstByteMs.compareAndSet(-1L, System.currentTimeMillis() - openAt)
+                    lastTunnelIoMs.set(System.currentTimeMillis())
                     TrafficStats.addRx(n.toLong()); ClientUsage.add(clientIp, n.toLong())
                 }
             )
