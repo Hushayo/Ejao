@@ -112,10 +112,13 @@ class Socks5Server(
     // bind rather than per accept.
     private val clientRcvBuf = 1 * 1024 * 1024
     private val clientSndBuf = 1 * 1024 * 1024
-    // IPTOS_LOWDELAY: best-effort DSCP hint for real-time traffic. Stacks and
-    // carriers that ignore it lose nothing; the ones that honour it stop
-    // queueing game packets behind bulk downloads on the same bearer.
+    // Legacy IPTOS_LOWDELAY hint for TCP. UDP uses the stronger DSCP EF
+    // marking below; neither is guaranteed to survive carrier middleboxes.
     private val socketTrafficClass = 0x10
+    // DSCP EF (46 << 2): UDP gets the voice/gaming Wi-Fi queue instead of
+    // competing as best-effort with Discord and downloads. Keep this separate
+    // from TCP: marking every bulk flow EF would defeat the prioritization.
+    private val udpTrafficClass = 0xb8
 
     // Handshake deadline only: once a tunnel is up both sockets run with
     // SO_TIMEOUT 0 (see handleConnect). The old 100s upstream read deadline
@@ -139,8 +142,9 @@ class Socks5Server(
     // cannot hand the game server a new source port mid-match.
     private val udpSendFailMinCount = 3
     private val udpSendFailMinMs = 1_500L
-    // Bounds queued outbound datagrams when sendto blocks on a stalled link.
-    private val udpInflightSem = Semaphore(64)
+    // Match the send-pool width: a packet that cannot start sendto now is
+    // dropped, not left to age in a coroutine queue behind a congested radio.
+    private val udpInflightSem = Semaphore(datagramThreads)
 
     private val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
@@ -317,7 +321,7 @@ class Socks5Server(
                 sock.reuseAddress = true
                 runCatching { sock.receiveBufferSize = 4 * 1024 * 1024 }
                 runCatching { sock.sendBufferSize = socketSndBuf }
-                runCatching { sock.trafficClass = socketTrafficClass }
+                runCatching { sock.trafficClass = udpTrafficClass }
                 sock.bind(InetSocketAddress("0.0.0.0", port))
                 udpSocket = sock
                 fails = 0
@@ -796,7 +800,7 @@ class Socks5Server(
                         it.soTimeout = 1000
                         runCatching { it.receiveBufferSize = socketRcvBuf }
                         runCatching { it.sendBufferSize = socketSndBuf }
-                        runCatching { it.trafficClass = socketTrafficClass }
+                        runCatching { it.trafficClass = udpTrafficClass }
                     }
                 } catch (e: Exception) {
                     onLog("UDP session create fail: ${e.message}")
@@ -842,17 +846,21 @@ class Socks5Server(
                 session.dest = UdpDest(dstIpKey, dstHostKey, dstPort, dstAddr, dstHost)
                 session.lastSendAt = System.currentTimeMillis()
                 session.sentSinceReply++
-                try {
-                    session.socket.send(DatagramPacket(payload, payload.size, dstAddr, dstPort))
-                    session.sendFails.set(0)
-                    session.tx.addAndGet(payload.size.toLong())
-                    TrafficStats.addTx(payload.size.toLong())
-                    EgressManager.reportSuccess(dstHost)
-                    ClientUsage.add(clientAddr.hostAddress ?: "", payload.size.toLong())
-                } catch (e: Exception) {
-                    // Same rule as the fast path: a transient sendto error
-                    // must not cost the client its session and source port.
-                    noteUdpSendFail(session, dstHost, e)
+                if (udpInflightSem.tryAcquire()) {
+                    try {
+                        session.socket.send(DatagramPacket(payload, payload.size, dstAddr, dstPort))
+                        session.sendFails.set(0)
+                        session.tx.addAndGet(payload.size.toLong())
+                        TrafficStats.addTx(payload.size.toLong())
+                        EgressManager.reportSuccess(dstHost)
+                        ClientUsage.add(clientAddr.hostAddress ?: "", payload.size.toLong())
+                    } catch (e: Exception) {
+                        // Same rule as the fast path: a transient sendto error
+                        // must not cost the client its session and source port.
+                        noteUdpSendFail(session, dstHost, e)
+                    } finally {
+                        udpInflightSem.release()
+                    }
                 }
             } catch (e: Exception) {
                 onLog("UDP packet handling error: ${e.message}")

@@ -84,6 +84,7 @@ class ProxyService : Service() {
     @Volatile private var backupPanelPortActual: Int = 0
     private var proxyDownNotified = false
     private var wifiLock: WifiManager.WifiLock? = null
+    private var lowLatencyLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var fileObserver: FileObserver? = null
     private var restartJob: Job? = null
@@ -1415,11 +1416,24 @@ class ProxyService : Service() {
             }.getOrNull()
             val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
             wifiLock = runCatching {
+                // LOW_LATENCY disables Wi-Fi power save while the app is in
+                // the foreground with the screen on. Keep HIGH_PERF held as
+                // well: this proxy is a background service over Wi-Fi Direct,
+                // so LOW_LATENCY alone can be inactive for the whole session.
+                @Suppress("DEPRECATION")
                 wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Ejao:wifi").apply {
                     setReferenceCounted(false)
                     acquire()
                 }
             }.getOrNull()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                lowLatencyLock = runCatching {
+                    wm.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "Ejao:low-latency").apply {
+                        setReferenceCounted(false)
+                        acquire()
+                    }
+                }.getOrNull()
+            }
         } catch (e: Exception) {
             Log.w(TAG, "locks unavailable: ${e.message}")
         }
@@ -1428,8 +1442,10 @@ class ProxyService : Service() {
     private fun releaseLocks() {
         runCatching { if (wakeLock?.isHeld == true) wakeLock?.release() }
         runCatching { if (wifiLock?.isHeld == true) wifiLock?.release() }
+        runCatching { if (lowLatencyLock?.isHeld == true) lowLatencyLock?.release() }
         wakeLock = null
         wifiLock = null
+        lowLatencyLock = null
     }
 
     private fun startForegroundCompat() {
